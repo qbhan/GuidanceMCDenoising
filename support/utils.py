@@ -18,7 +18,6 @@
 
 import numpy as np
 import argparse
-import torch as th
 
 
 def crop_like(src, tgt):
@@ -94,7 +93,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
                             help='from which epoch to start.')
         self.add_argument('--num_samples', type=int, default=8,
                             help='number of samples to be displayed.')
-        self.add_argument('--save', type=str, default='./weights', 
+        self.add_argument('--save', type=str, default='./weights2', 
                             help='directory to save the model.')
         self.add_argument('--overfit', action='store_true', 
                             help='launch overfitting test.')
+        self.add_argument('--summary', type=str, default='summary3/', 
+                            help='directory to save the tensorboard summary.')

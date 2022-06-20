@@ -1,0 +1,19 @@
+python train_adv.py \
+    --single_gpu \
+    --batch_size 8 \
+    --val_epoch 1 \
+    --data_dir /mnt/ssd1/iycho/KPCN \
+    --model_name KPCN_adv_new_w0.0001_p3 \
+    --desc "KPCN_adv_new_w0.0001_p3" \
+    --num_epoch 10 \
+    --lr_dncnn 1e-4 \
+    --manif_loss FMSE \
+    --pnet_out_size 3 \
+    --lr_pnet 1e-4 \
+    --use_llpm_buf \
+    --manif_learn \
+    --w_manif 0.1 \
+    --use_adv \
+    --w_adv 0.1 \
+    --start_epoch 0 \
+    --device_id 0

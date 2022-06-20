@@ -22,7 +22,7 @@ from train_kpcn import validate_kpcn, train, train_epoch_kpcn
 
 from support.networks import PathNet
 from support.interfaces import LBMCInterface
-from support.datasets import MSDenoiseDataset
+from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
 from support.losses import TonemappedRelativeMSE, RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
 
@@ -36,15 +36,19 @@ try:
 except ImportError as error:
     print('Put appropriate paths in the configs.py file.')
     raise
-from ttools.modules.image_operators import crop_like
+# from ttools.modules.image_operators import crop_like
 
 
 def init_data(args):
     # Initialize datasets
     datasets = {}
-    datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'lbmc', 'train', args.batch_size, 'random',
+    # datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'lbmc', 'train', args.batch_size, 'random',
+    #     use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
+    # datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'lbmc', 'val', BS_VAL, 'grid',
+    #     use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
+    datasets['train'] = DenoiseDataset(args.data_dir, 8, 'lbmc', 'train', args.batch_size, 'random',
         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
-    datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'lbmc', 'val', BS_VAL, 'grid',
+    datasets['val'] = DenoiseDataset(args.data_dir, 8, 'lbmc', 'val', BS_VAL, 'random',
         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
     
     # Initialize dataloaders
@@ -102,14 +106,15 @@ def init_model(dataset, args):
         is_pretrained = (args.start_epoch != 0) and os.path.isfile(model_fn)
 
         if is_pretrained:
-            ck = torch.load(model_fn)
+            ck = torch.load(model_fn, map_location='cuda:{}'.format(args.device_id))
             for model_name in models:
                 try:
                     models[model_name].load_state_dict(ck['state_dict_' + model_name])
                 except RuntimeError:
                     new_state_dict = OrderedDict()
                     for k, v in ck['state_dict_' + model_name].items():
-                        name = k[7:]
+                        # name = k[7:]
+                        name = k
                         new_state_dict[name] = v
                     models[model_name].load_state_dict(new_state_dict)
             print('Pretraining weights are loaded.')
@@ -177,7 +182,7 @@ def init_model(dataset, args):
                 print('Manifold loss: Global Relative Similarity')
         else:
             print('Manifold loss: None (i.e., ablation study)')
-        
+        # print('done')
         # Initialize a training interface (NOTE: modified for each model)
         itf = LBMCInterface(models, optims, loss_funcs, args, args.use_llpm_buf, args.manif_learn, w_manif, args.disentangle)
         if is_pretrained:
@@ -284,4 +289,6 @@ if __name__ == '__main__':
         if args.disentangle != 'm11r11' and s % 2 != 0:
             raise RuntimeError('Argument `pnet_out_size` should be a list of even numbers')
     
+    print('device:', args.device_id)
+    torch.cuda.set_device(f'cuda:{args.device_id}')
     main(args)

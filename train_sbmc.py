@@ -32,7 +32,7 @@ except ImportError as error:
     print('Put appropriate paths in the configs.py file.')
     raise
 from support.utils import BasicArgumentParser
-from ttools.modules.image_operators import crop_like
+# from ttools.modules.image_operators import crop_like
 
 
 def init_data(args):
@@ -122,7 +122,8 @@ def init_model(dataset, args):
         if args.single_gpu:
             print('Data Sequential')
             for model_name in models:
-                models[model_name] = models[model_name].cuda(args.device_id)
+                # models[model_name] = models[model_name].cuda(args.device_id)
+                models[model_name] = models[model_name].cuda()
         else:
             print('Data Parallel')
             if torch.cuda.device_count() == 1:

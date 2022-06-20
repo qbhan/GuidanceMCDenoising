@@ -1,0 +1,19 @@
+python train_kpcn.py \
+    --single_gpu \
+    --batch_size 4 \
+    --val_epoch 1 \
+    --data_dir /mnt/ssd1/iycho/KPCN \
+    --model_name KPCN_manif_second_b4 \
+    --desc "KPCN_manif_second_b4" \
+    --num_epoch 10 \
+    --lr_dncnn 1e-4 \
+    --manif_loss FMSE \
+    --pnet_out_size 3 \
+    --lr_dncnn 1e-4 \
+    --lr_pnet 1e-4 \
+    --use_llpm_buf \
+    --manif_learn \
+    --w_manif 0.1 \
+    --train_branches \
+    --use_second_strategy \
+    --device_id 3

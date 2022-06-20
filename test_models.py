@@ -14,10 +14,10 @@ from torch.utils.data import DataLoader
 import train_kpcn
 import train_sbmc
 import train_lbmc
+import train_adv
 from support.utils import crop_like
 from support.img_utils import WriteImg
 from support.datasets import FullImageDataset
-from support.networks import PathNet, weights_init
 from support.metrics import RelMSE, RelL1, SSIM, MSE, L1, _tonemap
 
 
@@ -38,7 +38,8 @@ def load_input(filename, spp, args):
     if 'KPCN' in args.model_name:
         dataset = FullImageDataset(filename, spp, 'kpcn',
                                    args.use_g_buf, args.use_sbmc_buf, 
-                                   args.use_llpm_buf, args.pnet_out_size[0])
+                                   args.use_llpm_buf, args.pnet_out_size[0], 
+                                   load_gbuf=args.load_gbuf, load_pbuf=args.load_pbuf)
     elif 'BMC' in args.model_name:
         dataset = FullImageDataset(filename, spp, 'sbmc',
                                    args.use_g_buf, args.use_sbmc_buf, 
@@ -52,6 +53,26 @@ def inference(interface, dataloader, spp, args):
     H, W = dataloader.dataset.h, dataloader.dataset.w
     PATCH_SIZE = dataloader.dataset.PATCH_SIZE
     out_rad = torch.zeros((3, H, W)).cuda()
+    out_rad_dict = {
+        'diffuse': torch.zeros((3, H, W)).cuda(),
+        'specular': torch.zeros((3, H, W)).cuda(),
+    }
+    out_kernel_dict = {
+        'diffuse': torch.zeros((21*21, H, W)).cuda(),
+        'specular': torch.zeros((21*21, H, W)).cuda()
+    }
+    out_score_dict = {
+        'fake_diffuse': torch.zeros((1, H, W)).cuda(),
+        'fake_specular': torch.zeros((1, H, W)).cuda(),
+        'real_diffuse': torch.zeros((1, H, W)).cuda(),
+        'real_specular': torch.zeros((1, H, W)).cuda(),
+    }
+    if args.use_skip or args.use_second_strategy or args.use_adv:
+        out_rad_dict['g_radiance'] = torch.zeros((3, H, W)).cuda() 
+        out_rad_dict['g_diffuse'] = torch.zeros((3, H, W)).cuda()
+        out_rad_dict['g_specular'] = torch.zeros((3, H, W)).cuda()
+        out_kernel_dict['g_diffuse'] = torch.zeros((21*21, H, W)).cuda()
+        out_kernel_dict['g_specular'] = torch.zeros((21*21, H, W)).cuda()
     out_path = None
 
     with torch.no_grad():
@@ -59,16 +80,24 @@ def inference(interface, dataloader, spp, args):
             for k in batch:
                 if not batch[k].__class__ == torch.Tensor:
                     continue
-                batch[k] = batch[k].cuda(args.device_id)
+                # batch[k] = batch[k].cuda(args.device_id)
+                batch[k] = batch[k].cuda()
 
             start = time.time()
-            out, p_buffers = interface.validate_batch(batch)
-
+            out, p_buffers, rad_dict, kernel_dict, score_dict = interface.validate_batch(batch, args.kernel_visualize)
+            # for k in rad_dict:
+            #     print(k)
             pad_h = PATCH_SIZE - out.shape[2]
             pad_w = PATCH_SIZE - out.shape[3]
             if pad_h != 0 and pad_w != 0:
                 out = nn.functional.pad(out, (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
-
+                for k in rad_dict:
+                    rad_dict[k] = nn.functional.pad(rad_dict[k], (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
+                for k in kernel_dict:
+                    kernel_dict[k] = nn.functional.pad(kernel_dict[k], (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
+                if score_dict:
+                    for k in score_dict:
+                        score_dict[k] = nn.functional.pad(score_dict[k], (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
             if args.use_llpm_buf and (out_path is None):
                 if type(p_buffers) == dict:
                     out_path = {}
@@ -83,6 +112,13 @@ def inference(interface, dataloader, spp, args):
 
             for b in range(out.shape[0]):
                 out_rad[:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = out[b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
+                for k in rad_dict:
+                    out_rad_dict[k][:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = rad_dict[k][b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
+                for k in kernel_dict:
+                    out_kernel_dict[k][:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = kernel_dict[k][b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
+                if score_dict:
+                    for k in score_dict:
+                        out_score_dict[k][:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = score_dict[k][b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
                 if args.use_llpm_buf:
                     if type(p_buffers) == dict:
                         for key in p_buffers:
@@ -91,6 +127,13 @@ def inference(interface, dataloader, spp, args):
                         out_path[:,:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = p_buffers[b,:,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
 
     out_rad = out_rad.detach().cpu().numpy().transpose([1, 2, 0])
+    for k in out_rad_dict:
+        out_rad_dict[k] = out_rad_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
+    for k in out_kernel_dict:
+        out_kernel_dict[k] = out_kernel_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
+    if score_dict:
+        for k in out_score_dict:
+            out_score_dict[k] = out_score_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
     if args.use_llpm_buf:
         if type(out_path) == dict:
             for key in out_path:
@@ -98,10 +141,10 @@ def inference(interface, dataloader, spp, args):
         elif type(out_path) == torch.Tensor:
             out_path = out_path.detach().cpu().numpy().transpose([2, 3, 0, 1])
 
-    return out_rad, out_path
+    return out_rad, out_path, out_rad_dict, out_kernel_dict, out_score_dict
 
 
-def denoise(args, input_dir, output_dir="../test_suite_2", scenes=None, spps=[8], save_figures=False, rhf=False, quantize=False):
+def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_figures=False, rhf=False, quantize=False, pixels=[(500,500)]):
     assert os.path.isdir(input_dir), input_dir
     assert 'KPCN' in args.model_name or 'BMC' in args.model_name, args.model_name
 
@@ -110,15 +153,19 @@ def denoise(args, input_dir, output_dir="../test_suite_2", scenes=None, spps=[8]
         for fn in os.listdir(input_dir.replace(os.sep + 'input', os.sep + 'gt')):
             if fn.endswith(".npy"):
                 scenes.append(fn)
-    num_metrics = 5 * 4 # (RelL2, RelL1, DSSIM, L1, MSE) * (linear, tmap w/o gamma, tmap gamma=2.2, tmap gamma=adaptive)
-    results = [[0 for i in range(len(scenes))] for j in range(num_metrics * len(spps))]
-    results_input = [[0 for i in range(len(scenes))] for j in range(num_metrics * len(spps))]
+    # num_metrics = 5 * 4 # (RelL2, RelL1, DSSIM, L1, MSE) * (linear, tmap w/o gamma, tmap gamma=2.2, tmap gamma=adaptive)
+    # results = [[0 for i in range(len(scenes))] for j in range(num_metrics * len(spps))]
+    # results_input = [[0 for i in range(len(scenes))] for j in range(num_metrics * len(spps))]
+    num_metrics = 6 * 4 # (RelL2, RelL1, DSSIM, L1, MSE) * (linear, tmap w/o gamma, tmap gamma=2.2, tmap gamma=adaptive)
+    results = [[0 for i in range(len(scenes)+1)] for j in range(num_metrics * len(spps))]
+    results_input = [[0 for i in range(len(scenes)+1)] for j in range(num_metrics * len(spps))]
 
     if args.model_name.endswith('.pth'):
         p_model = os.path.join(args.save, args.model_name)
     else:
         p_model = os.path.join(args.save, args.model_name + '.pth')
-    ck = torch.load(p_model)
+    # print('load model')
+    # ck = torch.load(p_model)
 
     print(scenes)
     for scene in scenes:
@@ -141,8 +188,9 @@ def denoise(args, input_dir, output_dir="../test_suite_2", scenes=None, spps=[8]
             """
             # Dateload
             filename = os.path.join(input_dir, scene + ".npy")
-
+            # print('load_input')
             dataset = load_input(filename, spp, args)
+            # print('done')
             
             MSPP = 32# if args.pnet_out_size[0] < 12 else 8
             if spp <= MSPP:
@@ -167,6 +215,8 @@ def denoise(args, input_dir, output_dir="../test_suite_2", scenes=None, spps=[8]
                     interfaces, _ = train_sbmc.init_model(datasets, args)
                 elif 'LBMC' in args.model_name:
                     interfaces, _ = train_lbmc.init_model(datasets, args)
+                elif 'single' in args.model_name or 'adv' in args.model_name:
+                    interfaces, _ = train_adv.init_model(datasets, args)
                 elif 'KPCN' in args.model_name:
                     interfaces, _ = train_kpcn.init_model(datasets, args)
             '''
@@ -174,7 +224,7 @@ def denoise(args, input_dir, output_dir="../test_suite_2", scenes=None, spps=[8]
                 engines, contexts = export_and_load_onnx_model(interfaces[0], p_model, dataloader)
                 return
             '''
-            out_rad, out_path = inference(interfaces[0], dataloader, spp, args)
+            out_rad, out_path, out_rad_dict, out_kernel_dict, out_score_dict = inference(interfaces[0], dataloader, spp, args)
             
             """
             Post processing
@@ -218,6 +268,12 @@ def denoise(args, input_dir, output_dir="../test_suite_2", scenes=None, spps=[8]
             valid_size = 72
             crop = (128 - valid_size) // 2
             out_rad = out_rad[crop:-crop, crop:-crop, ...]
+            for k in out_rad_dict:
+                out_rad_dict[k] = out_rad_dict[k][crop:-crop, crop:-crop, ...]
+            for k in out_kernel_dict:
+                out_kernel_dict[k] = out_kernel_dict[k][crop:-crop, crop:-crop, ...]
+            for k in out_score_dict:
+                out_score_dict[k] = out_score_dict[k][crop:-crop, crop:-crop, ...]
             if out_path is not None:
                 if type(out_path) == dict:
                     for key in out_path:
@@ -230,7 +286,9 @@ def denoise(args, input_dir, output_dir="../test_suite_2", scenes=None, spps=[8]
             # Process the background and emittors which do not require to be denoised
             has_hit = dataset.has_hit[crop:-crop, crop:-crop, ...]
             out_rad = np.where(has_hit == 0, ipt, out_rad)
-
+            for k in out_rad_dict:
+                if k == 'g_radiance':
+                    out_rad_dict[k] = np.where(has_hit == 0, ipt, out_rad_dict[k])
             """
             Statistics
             """
@@ -246,24 +304,37 @@ def denoise(args, input_dir, output_dir="../test_suite_2", scenes=None, spps=[8]
 
             metrics = [RelMSE, RelL1, SSIM, L1, MSE]
             tmaps = [linear, _tonemap, tonemap, tonemap28]
+            metrics_str = ['RelMSE', 'RelL1', 'SSIM', 'L1', 'MSE']
+            tmaps_str = ['linear', '_tonemap', 'tonemap', 'tonemap28']
             
             print(RelMSE(tonemap(out_rad), tonemap(tgt)))
             print(RelMSE(tonemap(ipt), tonemap(tgt)))
 
+            # for t, tmap in enumerate(tmaps):
+            #     for k, metric in enumerate(metrics):
+            #         results[(len(metrics) * t + k) * len(spps) + j][i] = metric(tmap(out_rad), tmap(tgt))
+            #         results_input[(len(metrics) * t + k) * len(spps) + j][i] = metric(tmap(ipt), tmap(tgt))
             for t, tmap in enumerate(tmaps):
+                formatting = [tmaps_str[t]] + scenes
+                results[6*t] = formatting
                 for k, metric in enumerate(metrics):
-                    results[(len(metrics) * t + k) * len(spps) + j][i] = metric(tmap(out_rad), tmap(tgt))
-                    results_input[(len(metrics) * t + k) * len(spps) + j][i] = metric(tmap(ipt), tmap(tgt))
+                    results[(6 * t + k + 1) * len(spps)][0] = metrics_str[k]
+                    results[(6 * t + k + 1) * len(spps) + j][i+1] = metric(tmap(out_rad), tmap(tgt))
+                    results_input[(6 * t + k + 1) * len(spps) + j][i+1] = metric(tmap(ipt), tmap(tgt))
 
             """
             Save
             """
             if save_figures:
+                if not args.load_pbuf and not 'no_pbuf' in args.model_name:
+                    args.model_name += '_no_pbuf'
+                if not args.load_gbuf and not 'no_gbuf' in args.model_name:
+                    args.model_name += '_no_gbuf'
                 t_tgt = tmaps[-1](tgt)
                 t_ipt = tmaps[-1](ipt)
                 t_out = tmaps[-1](out_rad)
                 t_err = np.mean(np.clip(err**0.45, 0.0, 1.0), 2)
-
+                print(output_dir)
                 plt.imsave(os.path.join(output_dir, scene, 'target.png'), t_tgt)
                 #WriteImg(os.path.join(output_dir, scene, 'target.pfm'), tgt) # HDR image
                 plt.imsave(os.path.join(output_dir, scene, 'input_{}.png'.format(spp)), t_ipt)
@@ -272,14 +343,38 @@ def denoise(args, input_dir, output_dir="../test_suite_2", scenes=None, spps=[8]
                 #WriteImg(os.path.join(output_dir, scene, 'output_{}_{}.pfm'.format(spp, args.model_name)), out_rad)
                 plt.imsave(os.path.join(output_dir, scene, 'errmap_rmse_{}_{}.png'.format(spp, args.model_name)), t_err, cmap=plt.get_cmap('magma'))
                 #WriteImg(os.path.join(output_dir, scene, 'errmap_{}_{}.pfm'.format(spp, args.model_name)), err.mean(2))
+                if args.kernel_visualize:
+                    print(out_score_dict['fake_diffuse'].shape)
+                    plt.imsave(os.path.join(output_dir, scene, 'score_fake_diffuse_{}_{}.png'.format(spp, args.model_name)), out_score_dict['fake_diffuse'][...,0], cmap='gray')
+                    plt.imsave(os.path.join(output_dir, scene, 'score_fake_specular_{}_{}.png'.format(spp, args.model_name)), out_score_dict['fake_specular'][...,0], cmap='gray')
+                    plt.imsave(os.path.join(output_dir, scene, 'score_real_diffuse_{}_{}.png'.format(spp, args.model_name)), out_score_dict['real_diffuse'][...,0], cmap='gray')
+                    plt.imsave(os.path.join(output_dir, scene, 'score_real_specular_{}_{}.png'.format(spp, args.model_name)), out_score_dict['real_specular'][...,0], cmap='gray')
+                    # for p in pixels:
+                    #     plt.imsave(os.path.join(output_dir, scene, 'crop_target_{}_{}_{}_{}.png'.format(spp, args.model_name, p[0], p[1])), t_tgt[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
+                    #     plt.imsave(os.path.join(output_dir, scene, 'crop_input_{}_{}_{}_{}.png'.format(spp, args.model_name, p[0], p[1])), t_ipt[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
+                    #     plt.imsave(os.path.join(output_dir, scene, 'crop_output_{}_{}_{}_{}.png'.format(spp, args.model_name, p[0], p[1])), t_out[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
 
-    np.savetxt(os.path.join(output_dir, 'results_{}_{}.csv'.format(args.model_name, spps[-1])), results, delimiter=',')
+            # if args.kernel_visualize:
+            #     for k in out_rad_dict:
+            #         kk = tmaps[-1](out_rad_dict[k])
+            #         plt.imsave(os.path.join(output_dir, scene, '{}_{}_{}.png'.format(spp, args.model_name,k)), kk)
+            #         # print(kk.shape)
+            #         # if k in ['diffuse, specular', 'g_diffuse', 'g_specular']:
+            #         for p in pixels:
+            #             plt.imsave(os.path.join(output_dir, scene, 'crop_{}_{}_{}_{}_{}.png'.format(spp, args.model_name,k,p[0],p[1])), kk[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
+            #     for k in out_kernel_dict:
+            #         for p in pixels:
+            #             kk = np.reshape(out_kernel_dict[k][p[0], p[1], ...], (21, 21))
+            #         plt.imsave(os.path.join(output_dir, scene, 'kernel_{}_{}_{}_{}_{}.png'.format(spp, args.model_name,k,p[0],p[1])), kk, cmap='gray')
+
+    np.savetxt(os.path.join(output_dir, 'results_{}_{}.csv'.format(args.model_name, spps[-1])), results, fmt='%s', delimiter=',')
     np.savetxt(os.path.join(output_dir, 'results_input_%d.csv'%(spps[-1])), results_input, delimiter=',')
 
 
 if __name__ == "__main__":
     class Args(): # just for compatibility with argparse-related functions
-        save = '/root/LPM/weights/'
+        output_dir = 'result7'
+        save = '/root/WCMC/weights2/'
         model_name = 'SBMC_v2.0'
         single_gpu = True
         use_g_buf, use_sbmc_buf, use_llpm_buf = True, True, True
@@ -298,7 +393,7 @@ if __name__ == "__main__":
 
         start_epoch = 0
         single_gpu = True
-        device_id = 0
+        device_id = 3
         lr_dncnn = 1e-4
 
         visual = False
@@ -308,12 +403,81 @@ if __name__ == "__main__":
         kpcn_ref = False
         kpcn_pre = False
         not_save = False
+
+        local = False
+
+        # new
+        use_skip = False
+        use_pretrain = False
+        use_second_strategy = False
+        use_single = False
+        use_adv = False
+        p_depth = 2
+        kernel_visualize = False
+
+        # feature analysis
+        load_gbuf = True
+        load_pbuf = True
     
     args = Args()
 
-    input_dir = '/mnt/ssd2/iycho/KPCN/test2/input/'
-    scenes = ['bathroom_v3', 'bathroom-3_v2', 'car', 'car_v2', 'car_v3', 'chair-room', 'chair-room_v2', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'library-office', 'sitting-room-2']
+    # input_dir = '/mnt/hdd1/iycho/KPCN/test/input/'
+    # scenes = ['bathroom', 'bathroom-3', 'car', 'car2', 'chair-room', 'chair', 'gharbi', 'hookah', 'kitchen-2', 'library-office', 'sitting-room-2', 'path-manifold', 'tableware', 'teapot']
+    input_dir = '/mnt/hdd1/kbhan/KPCN/test/input/'
+    scenes = ['bathroom-2', 'bathroom', 'bedroom', 'car', 'car2', 'coffee', 'cornell-box-2', 'cornell-box', 'dining-room-2', 'gharbi', 'glass-of-water', 'kitchen', 'lamp', 'living-room-2', 'living-room-3', 'living-room', 'material-testball', 'spaceship', 'staircase-2', 'staircase']
+    # scenes = ['bathroom']
     spps = [8]
+    torch.cuda.set_device(args.device_id)
+    # KPCN
+    # print('KPCN')
+    # args.model_name = 'KPCN_full'
+    # args.pnet_out_size = [0]
+    # args.use_llpm_buf, args.manif_learn = False, False
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # KPCN
+    # print('KPCN_manif')
+    # args.model_name = 'KPCN_manif_b3'
+    # args.pnet_out_size = [3]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = False, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # KPCN_skip
+    # print('KPCN_skip')
+    # args.model_name = 'KPCN_manif_skip_b4_pre_finetune_new'
+    # args.pnet_out_size = [3]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.use_skip, args.use_pretrain, args.use_second_strategy = True, False, False
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # KPCN_2nd
+    # print('KPCN_2nd')
+    # args.model_name = 'KPCN_manif_second_p_depth_4_skip'
+    # args.pnet_out_size = [3]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.use_skip, args.use_pretrain, args.use_second_strategy = True, False, True
+    # args.p_depth = 4
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # KPCN_adv
+    # print('KPCN_adv')
+    # args.model_name = 'KPCN_adv_new_w0.001'
+    # args.pnet_out_size = [3]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # # args.use_single = True
+    # args.use_adv = True
+    # # args.kernel_visualize = True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # LBMC
+    print('LBMC')
+    args.model_name = 'LBMC'
+    # args.pnet_out_size = [3]
+    # args.disentangle = 'm11r11'
+    args.use_g_buf, args.use_sbmc_buf, args.use_llpm_buf, args.manif_learn = True, False, False, False
+    denoise(args, input_dir, spps=[8], scenes=scenes, save_figures=True)
+
     
     """ Test cases
     # LBMC

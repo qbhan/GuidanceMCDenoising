@@ -1,5 +1,6 @@
 import torch
-from kornia import rgb_to_hls
+# from kornia import rgb_to_hls
+from kornia.color.hls import rgb_to_hls
 import math
 
 

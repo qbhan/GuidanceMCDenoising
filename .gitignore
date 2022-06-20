@@ -1,9 +1,13 @@
 rhf_data
 data
-weights
+weights*
+result*
+summary*
 __pycache__
 .vscode
 figures
 old_figures
 results
 paper_utils
+hehe.py
+sandbox.py

@@ -21,11 +21,12 @@ from tensorboardX import SummaryWriter
 import configs
 from support.networks import PathNet
 # our strategy
-from support.networks import SkipKPCN, KPCN_2ndStrategy
+from support.networks import AdvKPCN
 from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
 from support.losses import RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
-from support.interfaces import KPCNInterface, KPCNRefInterface, KPCNPreInterface
+from support.interfaces import AdvKPCNInterface
+from train_kpcn import validate_kpcn, train, train_epoch_kpcn
 
 # Gharbi et al. dependency
 sys.path.insert(1, configs.PATH_SBMC)
@@ -34,160 +35,15 @@ try:
 except ImportError as error:
     print('Put appropriate paths in the configs.py file.')
     raise
-# from ttools.modules.image_operators import crop_like
-
-def logging(writer, epoch, relL2, best_relL2):
-    writer.add_scalar('valid relL2 loss', relL2, epoch)
-    writer.add_scalar('valid best relL2 loss', best_relL2, epoch)
-
-def train_epoch_kpcn(epoch, interfaces, dataloaders, params, args):
-    assert 'train' in dataloaders, "argument `dataloaders` dictionary should contain `'train'` key."
-    assert 'data_device' in params, "argument `params` dictionary should contain `'data_device'` key."
-    print('[][] Epoch %d' % (epoch))
-
-    for itf in interfaces:
-        itf.to_train_mode()
-
-    for batch in tqdm(dataloaders['train'], leave=False, ncols=70):
-        # Transfer data from the cpu to gpu memory
-        for k in batch:
-            if not batch[k].__class__ == torch.Tensor:
-                continue
-            batch[k] = batch[k].cuda(params['data_device'])
-
-        # Main
-        for itf in interfaces:
-            itf.preprocess(batch)
-            itf.train_batch(batch)
-        
-    if not args.visual:
-        for itf in interfaces:
-            itf.get_epoch_summary(mode='train', norm=len(dataloaders['train']))
-
-    itf.epoch += 1
-    itf.cnt = 0
 
 
-def validate_kpcn(epoch, interfaces, dataloaders, params, args):
-    assert 'val' in dataloaders, "argument `dataloaders` dictionary should contain `'train'` key."
-    assert 'data_device' in params, "argument `params` dictionary should contain `'data_device'` key."
-    print('[][] Validation (epoch %d)' % (epoch))
-
-    for itf in interfaces:
-        itf.to_eval_mode()
-
-    cnt = 0
-    summaries = []
-    with torch.no_grad():
-        for batch in tqdm(dataloaders['val'], leave=False, ncols=70):
-            # Transfer data from the cpu to gpu memory
-            for k in batch:
-                if not batch[k].__class__ == torch.Tensor:
-                    continue
-                batch[k] = batch[k].cuda(params['data_device'])
-
-            # Main
-            for itf in interfaces:
-                itf.validate_batch(batch)
-
-    for itr in interfaces:
-        summaries.append(itf.get_epoch_summary(mode='eval', norm=len(dataloaders['val'])))
-
-    return summaries
-
-
-def train(interfaces, dataloaders, params, args):
-    print('[] Experiment: `{}`'.format(args.desc))
-    print('[] # of interfaces : %d'%(len(interfaces)))
-    print('[] Model training start...')
-    writer = SummaryWriter('summary3/'+args.desc)
-    # Start training
-    for epoch in range(args.start_epoch, args.num_epoch):
-        if len(interfaces) == 1:
-            save_fn = args.model_name + '.pth'
-        else:
-            raise NotImplementedError('Multiple interfaces')
-
-        start_time = time.time()
-        train_epoch_kpcn(epoch, interfaces, dataloaders, params, args)
-        print('[][] Elapsed time: %d'%(time.time() - start_time))
-
-        for i, itf in enumerate(interfaces):
-            tmp_params = params.copy()
-            tmp_params['vis'] = None
-
-            state_dict = {
-                'description': args.desc, #
-                'start_epoch': epoch + 1,
-                'model': str(itf.models['dncnn']),
-                'params': tmp_params,
-                'optims': itf.optims,
-                'args': args,
-                'best_err': itf.best_err
-            }
-
-            for model_name in itf.models:
-                state_dict['state_dict_' + model_name] = itf.models[model_name].state_dict()
-
-            if not args.not_save:
-                torch.save(state_dict, os.path.join(args.save, 'latest_' + save_fn))
-
-        # Validate models
-        if (epoch % args.val_epoch == args.val_epoch - 1):
-            print('[][] Validation')
-            summaries = validate_kpcn(epoch, interfaces, dataloaders, params, args)
-
-            for i, itf in enumerate(interfaces):
-                if summaries[i] < itf.best_err:
-                    itf.best_err = summaries[i]
-
-                    tmp_params = params.copy()
-                    tmp_params['vis'] = None
-
-                    state_dict = {
-                        'description': args.desc, #
-                        'start_epoch': epoch + 1,
-                        'model': str(itf.models['dncnn']),
-                        'params': tmp_params,
-                        'optims': itf.optims,
-                        'args': args,
-                        'best_err': itf.best_err
-                    }
-
-                    for model_name in itf.models:
-                        state_dict['state_dict_' + model_name] = itf.models[model_name].state_dict()
-
-                    if not args.not_save:
-                        torch.save(state_dict, os.path.join(args.save, save_fn))
-                        print('[][] Model %s saved at epoch %d.'%(save_fn, epoch))
-
-                print('[][] Model {} RelMSE: {:.3f}e-3 \t Best RelMSE: {:.3f}e-3'.format(save_fn, summaries[i]*1000, itf.best_err*1000))
-                logging(writer, epoch, summaries[i], itf.best_err)
-        # Update schedulers
-        for key in params:
-            if 'sched_' in key:
-                params[key].step()
-    print('[] Training complete!')
-
-
-"""
-Main Utils
-"""
 def init_data(args):
     # Initialize datasets
     datasets = {}
-    # datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-    #     use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
-    # datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-    #     use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
     datasets['train'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
     datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
-    # datasets['train'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-    #     use_g_buf=False, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
-    # datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-    #     use_g_buf=False, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
     
     # Initialize dataloaders
     dataloaders = {}
@@ -217,53 +73,24 @@ def init_model(dataset, args):
     for lr_pnet, pnet_out_size, w_manif in list(itertools.product(*tmp)):
         # Initialize models (NOTE: modified for each model) 
         models = {}
-        if args.train_branches:
-            print('Train diffuse and specular branches indenpendently.')
-        else:
-            print('Post-train two branches of KPCN.')
             
         if args.use_llpm_buf:
             if args.disentangle in ['m10r01', 'm11r01']:
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size // 2
             else:
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size
-
-            # if args.use_skip:
-            #     models['dncnn_skip'] = KPCN(n_in)
-            #     print('Initialize KPCN for path descriptors (# of input channels: %d).'%(n_in))
-            #     models['dncnn'] = KPCN(dataset['train'].gbuf_dncnn_in_size)
-            #     print('Initialize KPCN (# of input channels: %d).'%(dataset['train'].gbuf_dncnn_in_size))
-            # else:
-            #     models['dncnn'] = KPCN(n_in)
-            #     print('Initialize KPCN for path descriptors (# of input channels: %d).'%(n_in))
-            if args.use_second_strategy:
-                n_in = dataset['train'].gbuf_dncnn_in_size
-                models['dncnn'] = KPCN_2ndStrategy(n_in, pnet_out=pnet_out_size, p_depth=args.p_depth)  
-            elif args.use_skip:
-                models['dncnn'] = SkipKPCN(n_in, pnet_out=pnet_out_size)
-                if args.use_pretrain:
-                    models['dncnn'].load_pretrain('weights/KPCN_b4_new.pth')
-            else:
-                models['dncnn'] = KPCN(n_in)
-            print('Initialize KPCN for path descriptors (# of input channels: %d).'%(n_in))
+            print('adv', n_in, pnet_out_size)
+            models['dncnn'] = AdvKPCN(n_in, pnet_out=pnet_out_size)
+            print('Initialize AdvKPCN for path descriptors (# of input channels: %d).'%(n_in))
             n_in = dataset['train'].pnet_in_size
             n_out = pnet_out_size
-            if args.train_branches:
-                print('Train PathNet backbones indenpendently for diffuse and specular branches (# of input channels: %d, # of output channels: %d).'%(n_in, n_out))
-            else:
-                print('Post-train PathNet backbones.')
             models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
             models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
-            if args.use_pretrain:
-                pass
+            # models['KPN'] = KPN(ic=50)
         else:
-            if args.kpcn_ref:
-                n_in = dataset['train'].dncnn_in_size + 3
-            else:
-                n_in = dataset['train'].dncnn_in_size
-            
-            models['dncnn'] = KPCN(n_in)
-            print('Initialize KPCN for vanilla buffers (# of input channels: %d).'%(n_in))
+            n_in = dataset['train'].dncnn_in_size
+            models['dncnn'] = AdvKPCN(n_in, pnet_out=pnet_out_size+2)
+            print('Initialize AdvKPCN for vanilla buffers (# of input channels: %d).'%(n_in))
         
         # Load pretrained weights
         if len(list(itertools.product(*tmp))) == 1:
@@ -281,8 +108,8 @@ def init_model(dataset, args):
                 except RuntimeError:
                     new_state_dict = OrderedDict()
                     for k, v in ck['state_dict_' + model_name].items():
-                        name = k
                         # name = k[7:]
+                        name = k
                         new_state_dict[name] = v
                     models[model_name].load_state_dict(new_state_dict)
             print('Pretraining weights are loaded.')
@@ -351,7 +178,8 @@ def init_model(dataset, args):
             'l_diffuse': nn.L1Loss(),
             'l_specular': nn.L1Loss(),
             'l_recon': nn.L1Loss(),
-            'l_test': RelativeMSE()
+            'l_test': RelativeMSE(),
+            'l_adv': nn.BCELoss(),
         }
         if args.manif_learn:
             if args.manif_loss == 'FMSE':
@@ -364,15 +192,10 @@ def init_model(dataset, args):
             print('Manifold loss: None (i.e., ablation study)')
 
         # Initialize a training interface (NOTE: modified for each model)
-        if args.kpcn_ref:
-            itf = KPCNRefInterface(models, optims, loss_funcs, args, train_branches=args.train_branches)
-        elif args.kpcn_pre:
-            itf = KPCNPreInterface(models, optims, loss_funcs, args, manif_learn=args.manif_learn, train_branches=args.train_branches)
-        else:
-            itf = KPCNInterface(models, optims, loss_funcs, args, visual=args.visual, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, w_manif=w_manif, train_branches=args.train_branches, disentanglement_option=args.disentangle, use_skip=args.use_skip, use_pretrain=args.use_pretrain, apply_loss_twice=args.use_second_strategy)
-        if is_pretrained:
-            print('Use the checkpoint best error %.3e'%(args.best_err))
-            itf.best_err = args.best_err
+        itf = AdvKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
+        # if is_pretrained:
+        #     # print('Use the checkpoint best error %.3e'%(args.best_err))
+        #     itf.best_err = args.best_err
         interfaces.append(itf)
     
     # Initialize a visdom visualizer object
@@ -380,10 +203,10 @@ def init_model(dataset, args):
         'plots': {},
         'data_device': 1 if torch.cuda.device_count() > 1 and not args.single_gpu else args.device_id,
     }
-    # if args.visual:
-    #     params['vis'] = visdom.Visdom(server='http://localhost')
-    # else:
-    #     print('No visual.')
+    if args.visual:
+        params['vis'] = visdom.Visdom(server='http://localhost')
+    else:
+        print('No visual.')
     
     # Make the save directory if needed
     if not os.path.isdir(args.save):
@@ -472,15 +295,14 @@ if __name__ == "__main__":
                         help='train KPCN-Pre model.')
     parser.add_argument('--not_save', action='store_true',
                         help='do not save checkpoint (debugging purpose).')
-    parser.add_argument('--local', action='store_true')
+    parser.add_argument('--local', action='store_true', help='device id')
 
     # new arguments
     parser.add_argument('--use_skip', action='store_true')
-    parser.add_argument('--use_pretrain', action='store_true')
-    parser.add_argument('--pretrain', type=str, default='weights/KPCN_manif.pth')
-    # new arguments
-    parser.add_argument('--use_second_strategy', action='store_true')
-    parser.add_argument('--p_depth', type=int, default=2)
+    parser.add_argument('--use_adv', action='store_true')
+    parser.add_argument('--w_adv', nargs='+', default=[0.0001], 
+                        help='ratio of the adversarial learning loss to \
+                        the reconstruction loss.')
     
     args = parser.parse_args()
     
