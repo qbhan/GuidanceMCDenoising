@@ -159,7 +159,7 @@ class DenoiseDataset(Dataset):
             albedo_r, albedo_g, albedo_b,
     """
 
-    def __init__(self, gt_base_dir, spp, base_model='sbmc', mode='train', batch_size=8, sampling='random', use_g_buf=True, use_sbmc_buf=True, use_llpm_buf=False, pnet_out_size=3, use_single=False):
+    def __init__(self, gt_base_dir, spp, base_model='sbmc', mode='train', batch_size=8, sampling='random', use_g_buf=True, use_sbmc_buf=True, use_llpm_buf=False, pnet_out_size=3, use_single=False, no_pmodel=False):
         if base_model not in [self.SBMC, self.KPCN, self.LBMC]:
             raise RuntimeError("Unknown baseline model %s" % base_model)
         
@@ -225,9 +225,12 @@ class DenoiseDataset(Dataset):
                 self.gbuf_dncnn_in_size = 44
 
         if use_llpm_buf:
-            self.dncnn_in_size += pnet_out_size + 2 # path weight, p-buffer, variance
+            if not no_pmodel:
+                self.dncnn_in_size += pnet_out_size + 2 # path weight, p-buffer, variance
+            else:
+                self.dncnn_in_size += 38 # path weight, p-buffer, variance
 
-
+        print('dncnn_in_size', self.dncnn_in_size)
 
         # TODO(cho): OptaGen에서 데이터 생성할 때부터 metadata로 아래 정보를 넣자.
         # Raw feature ranges
@@ -1057,12 +1060,12 @@ class DenoiseDataset(Dataset):
                 sbmc_s_fn = in_fn[:in_fn.rfind('.')] + '_sbmc_s' + in_fn[in_fn.rfind('.'):]
                 sbmc_p_fn = in_fn[:in_fn.rfind('.')] + '_sbmc_p' + in_fn[in_fn.rfind('.'):]
                 sbmc_s_fn = sbmc_s_fn.replace(os.sep + 'KPCN' + os.sep, os.sep + 'SBMC' + os.sep)
-                # sbmc_p_fn = sbmc_p_fn.replace(os.sep + 'KPCN' + os.sep, os.sep + 'SBMC' + os.sep)
+                sbmc_p_fn = sbmc_p_fn.replace(os.sep + 'KPCN' + os.sep, os.sep + 'SBMC' + os.sep)
                 sbmc_s_fn = get_valid_path(sbmc_s_fn)
-                # sbmc_p_fn = get_valid_path(sbmc_p_fn)
+                sbmc_p_fn = get_valid_path(sbmc_p_fn)
 
                 _in_s = np.load(sbmc_s_fn, mmap_mode='r')[...,:self.spp,:]
-                # p_buf = np.load(sbmc_p_fn, mmap_mode='r')[...,:self.spp,:]
+                p_buf = np.load(sbmc_p_fn, mmap_mode='r')[...,:self.spp,:]
 
                 total_rad = np.array(_in_s[...,:3])
 
@@ -1083,12 +1086,10 @@ class DenoiseDataset(Dataset):
                     sample['radiance'] = total_rad
                     sample['features'] = np.array(total)
             elif (self.base_model == self.KPCN):
+                kpcn_fn = in_fn[:in_fn.rfind('.')] + '_kpcn_' + str(self.spp) + in_fn[in_fn.rfind('.'):]
+                kpcn_fn = get_valid_path(kpcn_fn)
+                _in = np.load(kpcn_fn)
                 if not self.use_single:
-                    kpcn_fn = in_fn[:in_fn.rfind('.')] + '_kpcn_' + str(self.spp) + in_fn[in_fn.rfind('.'):]
-                    kpcn_fn = get_valid_path(kpcn_fn)
-                    # print(kpcn_fn)
-                    _in = np.load(kpcn_fn)
-                    # zeros = np.zeros_like(_in[...,20:])
                     sample['kpcn_diffuse_in'] = np.concatenate([_in[...,:10], _in[...,20:]], axis=2)
                     sample['kpcn_specular_in'] = _in[...,10:]
                     # sample['kpcn_diffuse_in'] = np.concatenate([_in[...,:10], np.zeros((1280, 1280, 24), dtype=np.float32)], axis=2)
@@ -1097,15 +1098,16 @@ class DenoiseDataset(Dataset):
                     sample['kpcn_specular_buffer'] = _in[...,10:13]
                     sample['kpcn_albedo'] = _in[...,34:37] + 0.00316 # Note
                 else:
-                    kpcn_fn = in_fn[:in_fn.rfind('.')] + '_kpcn_' + str(self.spp) + in_fn[in_fn.rfind('.'):]
-                    kpcn_fn = get_valid_path(kpcn_fn)
-                    # print(kpcn_fn)
-                    _in = np.load(kpcn_fn)
                     sample['kpcn_albedo'] = _in[...,34:37] + 0.00316 # Note
                     diffuse_rad = _in[...,:3] * sample['kpcn_albedo']
-                    specular_rad = np.exp(_in[...,10:13]) - 1
-                    sample['kpcn_in'] = _in
+                    specular_rad = np.exp(_in[...,10:13]) - 1.0
                     sample['kpcn_buffer'] = diffuse_rad + specular_rad
+
+                    # log transform diffuse
+                    log_diffuse_rad = np.log(diffuse_rad + 1.0)
+                    grad_log_diffuse_rad = self._gradients(log_diffuse_rad)
+                    var_diffuse_rad = _in[...,3:4]
+                    sample['kpcn_in'] = np.concatenate([log_diffuse_rad, var_diffuse_rad, grad_log_diffuse_rad, _in[...,10:]], axis=2)
 
 
             if (self.use_llpm_buf):
@@ -1159,6 +1161,7 @@ class DenoiseDataset(Dataset):
 
             # Patch sampling probability map
             if 'SBMC' in in_fn:   prob_fn = in_fn.replace(os.sep + 'SBMC' + os.sep, os.sep + 'KPCN' + os.sep)
+            else: prob_fn = in_fn
             prob_fn = prob_fn[:prob_fn.rfind('.')] + '_prob_imp' + prob_fn[prob_fn.rfind('.'):]
             prob_fn = get_valid_path(prob_fn)
 
@@ -1187,7 +1190,7 @@ class MSDenoiseDataset(ConcatDataset):
 
     def __init__(self, dir, spp, base_model='sbmc', mode='train', batch_size=8,
                  sampling='random', use_g_buf=True, use_sbmc_buf=True, 
-                 use_llpm_buf=False, pnet_out_size=3):
+                 use_llpm_buf=False, pnet_out_size=3, use_single=False, no_pmodel=False):
         if spp < 2:
             raise RuntimeError("spp too low to randomize sample count, should"
                                "be at least 2.")
@@ -1195,7 +1198,8 @@ class MSDenoiseDataset(ConcatDataset):
         for _s in range(2, spp + 1):
             datasets.append(
                 DenoiseDataset(dir, _s, base_model, mode, batch_size,
-                               sampling, use_g_buf, use_sbmc_buf, use_llpm_buf, pnet_out_size)
+                               sampling, use_g_buf, use_sbmc_buf, use_llpm_buf, pnet_out_size,
+                               use_single, no_pmodel)
             )
         super(MSDenoiseDataset, self).__init__(datasets)
 
@@ -1376,11 +1380,13 @@ class FullImageDataset(Dataset):
 
             _in_s = self._load_all_spp_buffer(sbmc_s_fn)
             p_buf = self._load_all_spp_buffer(sbmc_p_fn)
+            if not self.load_pbuf: p_buf = np.zeros_like(p_buf)
 
             total_rad = np.array(_in_s[...,:3])
 
             if (self.use_g_buf and self.use_sbmc_buf):
                 s_buf = _in_s[...,3:3+24]
+                if not self.load_gbuf: g_buf = np.zeros_like(g_buf)
                 sample['radiance'] = total_rad
                 sample['features'] = np.concatenate([s_buf, p_buf], axis=3)
             elif (self.use_g_buf):
@@ -1402,26 +1408,46 @@ class FullImageDataset(Dataset):
                 
                 _in = np.load(kpcn_fn)
                 
-                sample['kpcn_diffuse_in'] = np.concatenate([_in[...,:10], _in[...,20:]], axis=2)
-                sample['kpcn_specular_in'] = _in[...,10:]
-                sample['kpcn_diffuse_buffer'] = _in[...,:3]
-                sample['kpcn_specular_buffer'] = _in[...,10:13]
-                sample['kpcn_albedo'] = _in[...,34:37] + 0.00316
+                if not self.use_single:
+                    sample['kpcn_diffuse_in'] = np.concatenate([_in[...,:10], _in[...,20:]], axis=2)
+                    sample['kpcn_specular_in'] = _in[...,10:]
+                    sample['kpcn_diffuse_buffer'] = _in[...,:3]
+                    sample['kpcn_specular_buffer'] = _in[...,10:13]
+                    sample['kpcn_albedo'] = _in[...,34:37] + 0.00316
+                else:
+                    sample['kpcn_albedo'] = _in[...,34:37] + 0.00316
+                    diffuse_rad = _in[...,:3] * sample['kpcn_albedo']
+                    specular_rad = np.exp(_in[...,10:13]) - 1.0
+                    sample['kpcn_buffer'] = diffuse_rad + specular_rad
+                    # log transform diffuse
+                    log_diffuse_rad = np.log(diffuse_rad + 1.0)
+                    grad_log_diffuse_rad = self._gradients(log_diffuse_rad)
+                    var_diffuse_rad = _in[...,3:4]
+                    sample['kpcn_in'] = np.concatenate([log_diffuse_rad, var_diffuse_rad, grad_log_diffuse_rad, _in[...,10:]], axis=2)
 
             else:
+                print('zero gbuf')
                 kpcn_fn = in_fn[:in_fn.rfind('.')] + '_kpcn_' + str(self.spp) + in_fn[in_fn.rfind('.'):]
                 kpcn_fn = get_valid_path(kpcn_fn)
                 
                 _in = np.load(kpcn_fn)
-                sample['kpcn_diffuse_in'] = np.concatenate([_in[...,:10], np.zeros((1280, 1280, 24), dtype=np.float32)], axis=2)
-                sample['kpcn_specular_in'] = np.concatenate([_in[...,10:20], np.zeros((1280, 1280, 24), dtype=np.float32)], axis=2)
-                # sample['kpcn_diffuse_in'] = np.zeros((1280, 1280, 34), dtype=np.float32)
-                # sample['kpcn_specular_in'] = np.zeros((1280, 1280, 34), dtype=np.float32)
-                sample['kpcn_diffuse_buffer'] = _in[...,:3]
-                sample['kpcn_specular_buffer'] = _in[...,10:13]
-                # sample['kpcn_albedo'] = np.zeros((1280, 1280, 3), dtype=np.float32)
-                sample['kpcn_albedo'] = _in[...,34:37] + 0.00316
 
+                if not self.use_single:
+                    sample['kpcn_diffuse_in'] = np.concatenate([_in[...,:10], np.zeros((1280, 1280, 24), dtype=np.float32)], axis=2)
+                    sample['kpcn_specular_in'] = np.concatenate([_in[...,10:20], np.zeros((1280, 1280, 24), dtype=np.float32)], axis=2)
+                    sample['kpcn_diffuse_buffer'] = _in[...,:3]
+                    sample['kpcn_specular_buffer'] = _in[...,10:13]
+                    sample['kpcn_albedo'] = _in[...,34:37] + 0.00316
+                else:
+                    sample['kpcn_albedo'] = _in[...,34:37] + 0.00316
+                    diffuse_rad = _in[...,:3] * sample['kpcn_albedo']
+                    specular_rad = np.exp(_in[...,10:13]) - 1.0
+                    sample['kpcn_buffer'] = diffuse_rad + specular_rad
+                    # log transform diffuse
+                    log_diffuse_rad = np.log(diffuse_rad + 1.0)
+                    grad_log_diffuse_rad = self._gradients(log_diffuse_rad)
+                    var_diffuse_rad = _in[...,3:4]
+                    sample['kpcn_in'] = np.concatenate([log_diffuse_rad, var_diffuse_rad, grad_log_diffuse_rad, _in[...,10:20], np.zeros_like((1280, 1280, 24))], axis=2)
 
         if (self.use_llpm_buf):
             if self.load_pbuf:
@@ -1451,6 +1477,7 @@ class FullImageDataset(Dataset):
                 sample['paths'] = np.array(_in[...,1:])
 
             else:
+                print('zero pbuf')
                 # Path sampling weight
                 if (self.base_model == self.SBMC):
                     sample['features'] = np.concatenate((
