@@ -1,0 +1,17 @@
+python train_sbmc.py \
+    --single_gpu \
+    --batch_size 8 \
+    --val_epoch 1 \
+    --data_dir /mnt/ssd2/kbhan/SBMC \
+    --model_name SBMC_manif_full_p12 \
+    --desc "SBMC_manif_full_p12" \
+    --num_epoch 10 \
+    --use_llpm_buf \
+    --lr_dncnn 5e-4 \
+    --lr_pnet 1e-4\
+    --manif_loss FMSE \
+    --manif_learn \
+    --w_manif 0.1 \
+    --pnet_out_size 12 \
+    --disentangle m11r11 \
+    --device_id 0

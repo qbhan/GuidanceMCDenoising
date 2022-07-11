@@ -1,3 +1,5 @@
+from turtle import forward
+from pyparsing import Forward
 import torch
 import torch.nn as nn
 import sys
@@ -153,9 +155,8 @@ class AdvKPCN(nn.Module):
         b_specular = crop_like(data["kpcn_specular_buffer"],
                                k_gbuf_specular).contiguous()
 
-        gbuf_r_diffuse = self.kernel_apply(b_diffuse, k_gbuf_diffuse)
-        gbuf_r_specular = self.kernel_apply(b_specular, k_gbuf_specular)
-
+        gbuf_r_diffuse, _ = self.kernel_apply(b_diffuse, k_gbuf_diffuse)
+        gbuf_r_specular, _ = self.kernel_apply(b_specular, k_gbuf_specular)
         albedo = crop_like(data["kpcn_albedo"], gbuf_r_diffuse).contiguous()
         gbuf_final_specular = torch.exp(gbuf_r_specular) - 1
         gbuf_final_diffuse = albedo * gbuf_r_diffuse
@@ -190,8 +191,8 @@ class AdvKPCN(nn.Module):
         k_diffuse += k_gbuf_diffuse * fake_diffuse
         k_specular += k_gbuf_specular * fake_specular
         
-        r_diffuse = self.kernel_apply(b_diffuse, self.softmax(k_diffuse))
-        r_specular = self.kernel_apply(b_specular, self.softmax(k_specular))
+        r_diffuse, _ = self.kernel_apply(b_diffuse, k_diffuse)
+        r_specular, _ = self.kernel_apply(b_specular, k_specular)
 
         albedo = crop_like(data["kpcn_albedo"], r_diffuse).contiguous()
         final_specular = torch.exp(r_specular) - 1
@@ -215,6 +216,569 @@ class AdvKPCN(nn.Module):
                     s_r_diffuse=real_diffuse, s_r_specular=real_specular,
                     k_diffuse=None, k_specular=None,
                     k_g_diffuse=None, k_g_specular=None)
+
+        return output
+
+class SingleStreamAdvKPCN(nn.Module):
+    """Re-implementation of [Bako 2017].
+    Kernel-Predicting Convolutional Networks for Denoising Monte Carlo
+    Renderings: <http://cvc.ucsb.edu/graphics/Papers/SIGGRAPH2017_KPCN/>
+    Args:
+        n_in(int): number of input channels in the diffuse/specular streams.
+        ksize(int): size of the gather reconstruction kernel.
+        depth(int): number of conv layers in each branch.
+        width(int): number of feature channels in each branch.
+    """
+
+    def __init__(self, n_in, feat_in=50, ksize=21, depth=9, width=100, pnet_out=5):
+        super(SingleStreamAdvKPCN, self).__init__()
+
+        # TODO check parameters...
+        self.ksize = ksize
+        self.pnet_size = pnet_out + 2
+        self.feat_in = feat_in
+        gbuf_in = n_in - pnet_out - 2
+
+        self.p_net = ops.ConvChain(
+            self.feat_in, ksize*ksize, depth=depth, width=width, ksize=3,
+            activation="relu", weight_norm=False, pad=True,
+            output_type="linear")
+
+        self.discriminator = PixelDiscriminator(n_in-7, feat_in+1)
+
+        self.g_net = ops.ConvChain(
+            gbuf_in, ksize*ksize, depth=depth, width=width, ksize=5,
+            activation="relu", weight_norm=False, pad=False,
+            output_type="linear")
+
+        # self.softmax = nn.Softmax(dim=1)
+        # self.softmax = nn.Identity()
+        self.kernel_apply = ops.KernelApply(softmax=True, splat=False)
+        # self.kernel_apply = WeightedFilter(channels=3, kernel_size=ksize, bias=False, splat=False)
+
+    def load_pretrain(self, pth):
+        state = torch.load(pth)
+        own_state = self.state_dict()
+        # load KPCN to gbuf
+        for k, v in state.items():
+            if k == 'state_dict_dncnn':
+                for key, value in v.items():
+                    # key, value = v
+                    new_key = 'gbuf_'+ key # add 'gbuf' in front of keys
+                    if k not in own_state:
+                        continue
+                    own_state[new_key].copy_(value.data)
+
+        # freeze these parts
+        for param in self.gbuf.parameters(): ############### TODO was (gbuf_diffuse, gbuf_specular)
+            param.requires_grad = False
+
+
+    def forward(self, data, vis=False):
+        """Forward pass of the model.
+        Args:
+            data(dict) with keys:
+                "kpcn_buffer"
+                "kpcn_in"
+                "paths"
+                "target_total"
+                "radiance"
+                "features"
+                #"kpcn_albedo"
+                #"target_diffuse"
+                #"target_specular"
+                
+        Returns:
+            (dict) with keys:
+                "radiance":
+                "diffuse":
+                "specular":
+        """
+        # Process the diffuse and specular channels independently
+        k_gbuf = self.g_net(data["kpcn_in"][:, :-self.pnet_size])
+
+        buffer = crop_like(data["kpcn_buffer"],
+                              k_gbuf).contiguous()
+
+        gbuf_r = self.kernel_apply(buffer, k_gbuf)
+
+        gbuf_final_radiance = torch.exp(gbuf_r) - 1
+
+        # discriminator
+        batch = {
+            'target': torch.cat([data['target'], data["kpcn_in"][:,10:]], 1), #´TODO?
+            'kpcn_in': torch.cat([gbuf_r, crop_like(data["kpcn_in"][:,10:], gbuf_r)], 1), # TODO?
+        }
+        # dis_diffuse = self.d_diffuse(torch.cat([gbuf_final_diffuse, data["kpcn_diffuse_in"][:,10:]], 1))
+        # dis_specular = self.d_specular(torch.cat([gbuf_final_specular, data["kpcn_specular_in"][:,10:]], 1))
+        out = self.discriminator(batch, mode='single_stream') # TODO mode???
+
+        fake, real, feat = out['fake'], out['real'], out['feat']
+
+        # Match dimensions
+        kernel = self.p_net(feat)
+        # k_diffuse = self.p_diffuse(torch.cat((fake_diffuse, feat_diffuse), dim=1))
+        # k_specular = self.p_specular(torch.cat((fake_specular, feat_specular), dim=1))
+        buffer = crop_like(data["kpcn_buffer"], kernel).contiguous()
+
+        # Skip Connection
+        kernel += k_gbuf * fake
+
+        radiance = self.kernel_apply(buffer, self.softmax(kernel))
+
+        final_radiance = torch.exp(radiance) - 1
+
+        if not vis:
+            output = dict(radiance=final_radiance, g_radiance=gbuf_final_radiance,
+                    s_f=fake, s_r=real,
+                    kernel=kernel, g_kernel=k_gbuf)
+
+        else:
+            output = dict(radiance=final_radiance, g_radiance=gbuf_final_radiance,
+                    s_f=fake, s_r=real,
+                    kernel=None, g_kernel=None)
+
+        return output
+
+class NewAdvKPCN_1(nn.Module):
+    """Our Implementation of Kernel predicting denoising network using 
+    adversarial training.
+
+    each branch uses two independent streams: one for diffuse and one for specular
+
+    Args:
+        g_in(int): number of input channels in the gbuf_only streams.
+        p_in(int): number of input channels in the pbuf_only streams.
+        ksize(int): size of the gather reconstruction kernel.
+        depth(int): number of conv layers in each branch.
+        width(int): number of feature channels in each branch.
+    """
+
+    def __init__(self, g_in, p_in, ksize=21, depth=9, width=100, pnet_out=5, gen_activation="relu", disc_activtion="relu", output_type="linear", strided_down=False):
+        super(NewAdvKPCN_1, self).__init__()
+
+        self.ksize = ksize
+        self.pnet_size = pnet_out + 2
+
+        self.G_diffuse = ops.ConvChain(
+            g_in, ksize*ksize, depth=depth, width=width, ksize=5,
+            activation="relu", weight_norm=False, pad=False,
+            output_type="linear")
+
+        self.G_specular = ops.ConvChain(
+            g_in, ksize*ksize, depth=depth, width=width, ksize=5,
+            activation="relu", weight_norm=False, pad=False,
+            output_type="linear")
+
+        # # should add shallow MLP to substitute simple averaging sample-wise path feature
+        # self.p_diff_embed = nn.Sequential(
+		# 	nn.Conv2d(p_in * 8, p_in * 8, 1, padding=0),
+		# 	nn.ReLU(inplace=True),
+		# 	nn.Conv2d(p_in * 8, p_in * 8, 1, padding=0),
+		# 	nn.ReLU(inplace=True),
+		# 	nn.Conv2d(p_in * 8, p_in, 1, padding=0),
+		# 	nn.ReLU(inplace=True),
+		# )
+
+        # self.p_spec_embed = nn.Sequential(
+		# 	nn.Conv2d(p_in * 8, p_in * 8, 1, padding=0),
+		# 	nn.ReLU(inplace=True),
+		# 	nn.Conv2d(p_in * 8, p_in * 8, 1, padding=0),
+		# 	nn.ReLU(inplace=True),
+		# 	nn.Conv2d(p_in * 8, p_in, 1, padding=0),
+		# 	nn.ReLU(inplace=True),
+		# )
+
+        self.P_diffuse = ops.ConvChain(
+            p_in, ksize*ksize, depth=depth, width=width, ksize=5,
+            activation="relu", weight_norm=False, pad=False,
+            output_type="linear")
+
+        self.P_specular = ops.ConvChain(
+            p_in, ksize*ksize, depth=depth, width=width, ksize=5,
+            activation="relu", weight_norm=False, pad=False,
+            output_type="linear")
+
+        self.dis_in = (g_in - 10) + (p_in - 10) + 3
+
+        self.D_diffuse = PixelDiscriminator(self.dis_in, 1 + 50, strided_down, activation=disc_activtion)
+        self.D_specular = PixelDiscriminator(self.dis_in, 1 + 50, strided_down, activation=disc_activtion)
+
+        self.kernel_apply = ops.KernelApply(softmax=True, splat=False)
+
+        self.R_diffuse = ops.ConvChain(
+            100, 1, depth=5, width=width, ksize=5,
+            activation="relu", weight_norm=False, pad=True,
+            output_type="sigmoid")
+
+        self.R_specular = ops.ConvChain(
+            100, 1, depth=5, width=width, ksize=5,
+            activation="relu", weight_norm=False, pad=True,
+            output_type="sigmoid")
+
+
+    def forward(self, data, vis=False):
+        """Forward pass of the model.
+
+        Args:
+            data(dict) with keys:
+                "kpcn_diffuse_in":
+                "kpcn_specular_in":
+                "kpcn_diffuse_buffer":
+                "kpcn_specular_buffer":
+                "kpcn_albedo":
+
+        Returns:
+            (dict) with keys:
+                "radiance":
+                "diffuse":
+                "specular":
+        """
+        # pass path featurs to simple embeddings
+        # B, S, C, H, W = data['paths'].shape
+        # diff_pbuf = self.p_diff_embed(data['paths'].reshape(B*S, C, H, W))
+        # spec_pbuf = self.p_spec_embed(data['paths'].reshape(B*S, C, H, W))
+
+        # new features for path-branch & discriminator
+        p_diffuse_in = torch.cat((data["kpcn_diffuse_in"][:,:10], data['paths_diffuse']), dim=1)
+        p_specular_in = torch.cat((data["kpcn_specular_in"][:,:10], data['paths_specular']), dim=1)
+        dis_feat_diffuse = torch.cat((data["kpcn_diffuse_in"][:,10:], data['paths_diffuse']), dim=1)
+        dis_feat_specular = torch.cat((data["kpcn_specular_in"][:,10:], data['paths_specular']), dim=1)
+
+        # p_diffuse_in = torch.cat((data["kpcn_diffuse_in"][:,:10], diff_pbuf), dim=1)
+        # p_specular_in = torch.cat((data["kpcn_diffuse_in"][:,:10], spec_pbuf), dim=1)
+        # dis_feat = torch.cat((data["kpcn_diffuse_in"][:,:10], data['kpcn_specular_in'], data['paths']), dim=1)
+
+        # Process the diffuse and specular channels independently
+        g_k_diffuse = self.G_diffuse(data["kpcn_diffuse_in"])
+        g_k_specular = self.G_specular(data["kpcn_specular_in"])
+        p_k_diffuse = self.P_diffuse(p_diffuse_in)
+        p_k_specular = self.P_specular(p_specular_in)
+
+        b_diffuse = crop_like(data["kpcn_diffuse_buffer"],
+                              g_k_diffuse).contiguous()
+        b_specular = crop_like(data["kpcn_specular_buffer"],
+                               g_k_specular).contiguous()
+
+        g_r_diffuse, _ = self.kernel_apply(b_diffuse, g_k_diffuse)
+        g_r_specular, _ = self.kernel_apply(b_specular, g_k_specular)
+        p_r_diffuse, _ = self.kernel_apply(b_diffuse, p_k_diffuse)
+        p_r_specular, _ = self.kernel_apply(b_specular, p_k_specular)
+    
+
+        albedo = crop_like(data["kpcn_albedo"], g_r_diffuse).contiguous()
+        g_f_specular = torch.exp(g_r_specular) - 1.0
+        g_f_diffuse = albedo * g_r_diffuse
+        g_f_radiance = g_f_diffuse + g_f_specular
+        p_f_specular = torch.exp(p_r_specular) - 1.0
+        p_f_diffuse = albedo * p_r_diffuse
+        p_f_radiance = p_f_diffuse + p_f_specular
+
+        # discriminator
+        # returns 1 + C channels
+        # 1 refers to scoremap
+        # C refers to hidden embeddings for kernel interpolation 
+        batch_diffuse = {
+            'diffuse_target': torch.cat([crop_like(data['target_diffuse'], g_r_diffuse), crop_like(dis_feat_diffuse, g_r_diffuse)], 1),
+            'diffuse_G': torch.cat([g_r_diffuse, crop_like(dis_feat_diffuse, g_r_diffuse)], 1),
+            'diffuse_P': torch.cat([p_r_diffuse, crop_like(dis_feat_diffuse, p_r_diffuse)], 1),
+        }
+        batch_specular = {
+            'specular_target': torch.cat([crop_like(data['target_specular'], g_r_specular), crop_like(dis_feat_specular, g_r_specular)], 1),
+            'specular_G': torch.cat([g_r_specular, crop_like(dis_feat_specular, g_r_specular)], 1),
+            'specular_P': torch.cat([p_r_specular, crop_like(dis_feat_specular, p_r_specular)], 1),
+        }
+        dis_out_diffuse = self.D_diffuse(batch_diffuse, 'newadv1')
+        dis_out_specular = self.D_specular(batch_specular, 'newadv1')
+
+        # use hidden embeddings to find interpolation weight
+        # due to sigmoid activation, it will have value between 0 and 1
+        int_weight_diffuse = self.R_diffuse(torch.cat([dis_out_diffuse['diffuse_G'][:, 1:], dis_out_diffuse['diffuse_P'][:, 1:]], dim=1))
+        int_weight_specular = self.R_specular(torch.cat([dis_out_specular['specular_G'][:, 1:], dis_out_specular['specular_P'][:, 1:]], dim=1))
+
+
+        # Interpolate new kernel using the scores
+        # This part should be more sophisticated
+        # n_k_diffuse = g_k_diffuse * dis_out['diffuse_G'] + p_k_diffuse * dis_out['diffuse_P']
+        # n_k_specular = g_k_specular * dis_out['specular_G'] + p_k_specular * dis_out['specular_P']
+        n_k_diffuse = g_k_diffuse * int_weight_diffuse + p_k_diffuse * (1.0 - int_weight_diffuse)
+        n_k_specular = g_k_specular * int_weight_specular + p_k_specular * (1.0 - int_weight_specular)
+
+        r_diffuse, _ = self.kernel_apply(b_diffuse, n_k_diffuse)
+        r_specular, _ = self.kernel_apply(b_specular, n_k_specular)
+
+        albedo = crop_like(data["kpcn_albedo"], r_diffuse).contiguous()
+        final_specular = torch.exp(r_specular) - 1
+        final_diffuse = albedo * r_diffuse
+        final_radiance = final_diffuse + final_specular
+
+        if not vis:
+            output = dict(radiance=final_radiance, diffuse=r_diffuse,
+                    specular=r_specular, 
+                    g_radiance=g_f_radiance, g_diffuse=g_r_diffuse, 
+                    g_specular=g_r_specular,
+                    p_radiance=p_f_radiance, p_diffuse=p_r_diffuse, 
+                    p_specular=p_r_specular,
+                    s_diffuse=dis_out_diffuse['diffuse_target'][:, :1], s_specular=dis_out_specular['specular_target'][:, :1], 
+                    s_g_diffuse=dis_out_diffuse['diffuse_G'][:, :1], s_g_specular=dis_out_specular['specular_G'][:, :1],
+                    s_p_diffuse=dis_out_diffuse['diffuse_P'][:, :1], s_p_specular=dis_out_specular['specular_P'][:, :1],
+                    weight_diffuse=int_weight_diffuse, weight_specular=int_weight_specular,
+                    n_k_diffuse=n_k_diffuse, n_k_specular=n_k_specular,
+                    g_k_diffuse=g_k_diffuse, g_k_specular=g_k_specular,
+                    p_k_diffuse=p_k_diffuse, p_k_specular=p_k_specular)
+
+        else:
+            output = dict(radiance=final_radiance, diffuse=r_diffuse,
+                    specular=r_specular, 
+                    g_radiance=g_f_radiance, g_diffuse=g_r_diffuse, 
+                    g_specular=g_r_specular,
+                    p_radiance=p_f_radiance, p_diffuse=p_r_diffuse, 
+                    p_specular=p_r_specular,
+                    s_diffuse=dis_out_diffuse['diffuse_target'][:, :1], s_specular=dis_out_specular['specular_target'][:, :1], 
+                    s_g_diffuse=dis_out_diffuse['diffuse_G'][:, :1], s_g_specular=dis_out_specular['specular_G'][:, :1],
+                    s_p_diffuse=dis_out_diffuse['diffuse_P'][:, :1], s_p_specular=dis_out_specular['specular_P'][:, :1],
+                    weight_diffuse=int_weight_diffuse, weight_specular=int_weight_specular,
+                    n_k_diffuse=None, n_k_specular=None,
+                    g_k_diffuse=None, g_k_specular=None,
+                    p_k_diffuse=None, p_k_specular=None)
+
+        return output
+
+
+class NewAdvKPCN_2(nn.Module):
+    """
+    Our Implementation of Kernel predicting denoising network using 
+    adversarial training.
+
+    each branch uses two independent streams: one for diffuse and one for specular
+
+    Args:
+        g_in(int): number of input channels in the gbuf_only streams.
+        p_in(int): number of input channels in the pbuf_only streams.
+        ksize(int): size of the gather reconstruction kernel.
+        depth(int): number of conv layers in each branch.
+        width(int): number of feature channels in each branch.
+    """
+
+    def __init__(self, g_in, p_in, ksize=21, depth=9, width=100, pnet_out=5, gen_activation="relu", disc_activtion="relu", output_type="linear", strided_down=False, use_krn=False):
+        super(NewAdvKPCN_2, self).__init__()
+
+        self.ksize = ksize
+        self.use_krn = use_krn
+
+        self.G = ops.ConvChain(
+            g_in, ksize*ksize, depth=depth, width=width, ksize=5,
+            activation=gen_activation, weight_norm=False, pad=False,
+            output_type=output_type)
+
+        self.P = ops.ConvChain(
+            p_in, ksize*ksize, depth=depth, width=width, ksize=5,
+            activation=gen_activation, weight_norm=False, pad=False,
+            output_type=output_type)
+
+        self.dis_in = (g_in - 20) + (p_in - 20) + 3
+        # print('dis_in', self.dis_in)
+        dis_out = 1
+        if use_krn: dis_out += 50 
+        print(dis_out)
+        self.D = PixelDiscriminator(self.dis_in, dis_out, strided_down, activation=disc_activtion)
+
+        # kernel refining network using the embedding from pixel discriminator
+        if use_krn:
+
+            self.KRN = ops.ConvChain(
+                100, 1, depth=3, width=width, ksize=5,
+                activation=gen_activation, weight_norm=False, pad=True,
+                output_type='sigmoid')
+
+        self.kernel_apply = ops.KernelApply(softmax=True, splat=False)
+
+
+    def forward(self, data, vis=False):
+        """Forward pass of the model.
+
+        Args:
+            data(dict) with keys:
+                "kpcn_in":
+                "kpcn_buffer":
+                "kpcn_albedo":
+                "target_total":
+
+        Returns:
+            (dict) with keys:
+                "radiance":
+                "g_radiance":
+                "p_radiance":
+        """
+        # new features for path-branch & discriminator
+        p_in = torch.cat([data['kpcn_in'][:, :20], data['paths'].mean(1)], dim=1) # currently using mean of path features over samples. Might further use path model for better compression
+        dis_feat = torch.cat((data["kpcn_in"][:,20:], data['paths'].mean(1)), dim=1)
+
+        # Denoise both gbuf_only & pbuf_only branch
+        g_kernel = self.G(data["kpcn_in"]).contiguous()
+        p_kernel = self.P(p_in).contiguous()
+
+        assert g_kernel.shape[1] == p_kernel.shape[1]
+
+        buffer = crop_like(data["kpcn_buffer"],
+                              g_kernel).contiguous()
+
+        g_rad, _ = self.kernel_apply(buffer, g_kernel)
+        p_rad, _ = self.kernel_apply(buffer, p_kernel)
+
+        # Pass each to the discriminator with dis_feat
+        batch = {
+            # 'target_in': torch.cat([crop_like(data['target_total'], g_rad), crop_like(data["kpcn_in"][:,20:], g_rad), crop_like(data["paths"].mean(1), g_rad)], 1),
+            # 'g_rad_in': torch.cat([g_rad, crop_like(data["kpcn_in"][:,20:], g_rad), crop_like(data["paths"].mean(1), g_rad)], 1),
+            # 'p_rad_in': torch.cat([p_rad, crop_like(data["kpcn_in"][:,20:], p_rad), crop_like(data["paths"].mean(1), p_rad)], 1),
+            'target_in': torch.cat([crop_like(data['target_total'], g_rad), crop_like(dis_feat, g_rad)], dim=1),
+            'g_rad_in': torch.cat([g_rad, crop_like(dis_feat, g_rad)], dim=1),
+            'p_rad_in': torch.cat([p_rad, crop_like(dis_feat, p_rad)], dim=1),
+        }
+        # print(batch['g_rad_in'].shape, batch['p_rad_in'].shape, batch['target_in'].shape)
+        dis_out = self.D(batch, mode='adv_2')
+        # print('dis_out', dis_out['fake'].shape)
+        g_score, p_score, gt_score = dis_out['fake'][:,:1], dis_out['fake_2'][:,:1], dis_out['real'][:,:1]
+
+        # Interpolate new kernel using the scores
+        # This part should be more sophisticated
+        if not self.use_krn:
+            new_kernel = (g_kernel * g_score + p_kernel * p_score).contiguous()
+        else:
+            g_feat, p_feat = dis_out['fake'][:,1:], dis_out['fake_2'][:,1:]
+            interpolate_weight = self.KRN(torch.cat([g_feat, p_feat], dim=1))
+            interpolate_weight = crop_like(interpolate_weight, g_kernel)
+            new_kernel = g_kernel * interpolate_weight + p_kernel * (1.0 - interpolate_weight)
+
+        # Apply new kernel for final denoising
+        final_radiance, _ = self.kernel_apply(buffer, new_kernel)
+        
+
+        if vis:
+            output = dict(radiance=final_radiance, g_radiance=g_rad, p_radiance=p_rad,
+                    g_score=g_score, p_score=p_score, gt_score=gt_score,
+                    g_kernel=g_kernel, p_kernel=p_kernel, new_kernel=new_kernel
+                    )
+
+        else:
+            output = dict(radiance=final_radiance, g_radiance=g_rad, p_radiance=p_rad,
+                    g_score=g_score, p_score=p_score, gt_score=gt_score,
+                    g_kernel=None, p_kernel=None, new_kernel=None
+                    )
+
+        return output
+
+class ModKPCN(nn.Module):
+    """Re-implementation of [Bako 2017].
+
+    Kernel-Predicting Convolutional Networks for Denoising Monte Carlo
+    Renderings: <http://cvc.ucsb.edu/graphics/Papers/SIGGRAPH2017_KPCN/>
+
+    Args:
+        n_in(int): number of input channels in the diffuse/specular streams.
+        ksize(int): size of the gather reconstruction kernel.
+        depth(int): number of conv layers in each branch.
+        width(int): number of feature channels in each branch.
+    """
+
+    def __init__(self, g_in, p_in, ksize=21, depth=18, width=100, activation="relu", output_type="linear"):
+        super(ModKPCN, self).__init__()
+
+        self.ksize = ksize
+
+        self.G = ops.ConvChain(
+            g_in, ksize*ksize, depth=depth, width=width, ksize=3,
+            activation=activation, weight_norm=False, pad=True,
+            output_type=output_type)
+
+        self.P = ops.ConvChain(
+            p_in, ksize*ksize, depth=depth, width=width, ksize=3,
+            activation=activation, weight_norm=False, pad=True,
+            output_type=output_type)
+
+        self.kernel_apply = ops.KernelApply(softmax=True, splat=True)
+
+    def forward(self, data, vis=False):
+        # new features for path-branch & discriminator
+        p_in = torch.cat([data['kpcn_in'][:, :20], data['paths'].mean(1)], dim=1) # currently using mean of path features over samples. Might further use path model for better compression
+
+        # Denoise both gbuf_only & pbuf_only branch
+        g_kernel = self.G(data["kpcn_in"])
+        p_kernel = self.P(p_in)
+
+        assert g_kernel.shape[1] == p_kernel.shape[1]
+
+        buffer = crop_like(data["kpcn_buffer"],
+                              g_kernel).contiguous()
+
+        g_rad, _ = self.kernel_apply(buffer, g_kernel)
+        p_rad, _ = self.kernel_apply(buffer, p_kernel)
+
+        if vis:
+            return dict(g_radiance=g_rad, p_radiance=p_rad,
+                        g_kernel=g_kernel, p_kernel=p_kernel)
+        else:
+            return dict(g_radiance=g_rad, p_radiance=p_rad,
+                        g_kernel=None, p_kernel=None)
+
+class SingleKPCN(nn.Module):
+    """Re-implementation of [Bako 2017].
+
+    Kernel-Predicting Convolutional Networks for Denoising Monte Carlo
+    Renderings: <http://cvc.ucsb.edu/graphics/Papers/SIGGRAPH2017_KPCN/>
+
+    Args:
+        n_in(int): number of input channels in the diffuse/specular streams.
+        ksize(int): size of the gather reconstruction kernel.
+        depth(int): number of conv layers in each branch.
+        width(int): number of feature channels in each branch.
+    """
+
+    def __init__(self, n_in, ksize=21, depth=9, width=100):
+        super(SingleKPCN, self).__init__()
+
+        self.ksize = ksize
+
+        self.denoise = ops.ConvChain(
+            n_in, ksize*ksize, depth=depth, width=width, ksize=5,
+            activation="relu", weight_norm=False, pad=False,
+            output_type="linear")
+
+        self.kernel_apply = ops.KernelApply(softmax=True, splat=True)
+
+    def forward(self, data, vis=False):
+        """Forward pass of the model.
+
+        Args:
+            data(dict) with keys:
+                "kpcn_diffuse_in":
+                "kpcn_specular_in":
+                "kpcn_diffuse_buffer":
+                "kpcn_specular_buffer":
+                "kpcn_albedo":
+
+        Returns:
+            (dict) with keys:
+                "radiance":
+                "diffuse":
+                "specular":
+        """
+        # Process the diffuse and specular channels independently
+        k_denoise = self.diffuse(data["kpcn_in"])
+
+        # Match dimensions
+        b_denoise = crop_like(data["kpcn_buffer"],
+                              k_denoise).contiguous()
+        # Kernel reconstruction
+        r_denoise, _ = self.kernel_apply(b_denoise, k_denoise)
+
+        # Combine diffuse/specular/albedo
+        # albedo = crop_like(data["kpcn_albedo"], r_diffuse)
+        # final_specular = th.exp(r_specular) - 1
+        # final_diffuse = albedo * r_diffuse
+        # final_radiance = final_diffuse + final_specular
+        if vis: output = dict(radiance=r_denoise, k_denoise=k_denoise)
+        else: output = dict(radiance=r_denoise, k_denoise=None)
 
         return output
 
@@ -449,8 +1013,7 @@ class KPCN_Single(nn.Module):
 
         self.softmax = nn.Softmax(dim=1)
 
-        # self.kernel_apply = ops.KernelApply(softmax=True, splat=False)
-        self.kernel_apply = WeightedFilter(channels=3, kernel_size=ksize, bias=False, splat=False)
+        self.kernel_apply = ops.KernelApply(softmax=True, splat=False)
 
     def forward(self, data):
         """Forward pass of the model.
@@ -483,10 +1046,11 @@ class KPCN_Single(nn.Module):
         return output
 
 class PixelDiscriminator(nn.Module):
-    def __init__(self, n_in, n_out, use_ch=False):
+    def __init__(self, n_in, n_out, use_ch=False, strided_down=False, activation="relu"):
         super(PixelDiscriminator, self).__init__()
-        print('unet', n_in, n_out)
-        self.unet = SimpleUNet(n_in, n_out)
+        # print('unet', n_in, n_out)
+        # print("PixelDiscriminator", activation)
+        self.unet = SimpleUNet(n_in, n_out, strided_down=strided_down, activation=activation)
         # self.unet = nn.Conv2d(n_in, n_out, 1)
         self.sigmoid = nn.Sigmoid()
     
@@ -494,13 +1058,32 @@ class PixelDiscriminator(nn.Module):
         if mode == 'diff': 
             x, _ = self.unet(data['kpcn_diffuse_in'])
             y, _ = self.unet(data['target_diffuse'])
+            output = dict(fake=self.sigmoid(x[:,:1]), real=self.sigmoid(y[:,:1]), feat=x[:,1:], fake_2=None)
         elif mode =='spec': 
             x, _ = self.unet(data['kpcn_specular_in'])
             y, _ = self.unet(data['target_specular'])
-        
-        
+            output = dict(fake=self.sigmoid(x[:,:1]), real=self.sigmoid(y[:,:1]), feat=x[:,1:], fake_2=None)
+        elif mode == 'adv_2':
+            x, _ = self.unet(data['g_rad_in'])
+            y, _ = self.unet(data['target_in'])
+            z, _ = self.unet(data['p_rad_in'])
+            # output = dict(fake=self.sigmoid(x[:,:1]), real=self.sigmoid(y[:,:1]), feat=x[:,1:], fake_2=self.sigmoid(z[:,:1]))
+            output = dict(fake=self.sigmoid(x), real=self.sigmoid(y), feat=x[:,1:], fake_2=self.sigmoid(z))
+        elif mode == 'single_stream':
+            x, _ = self.unet(data['kpcn_in'])
+            y, _ = self.unet(data['target'])
+            z, _ = torch.zeros_like(y) # TODO add this line in git
+            output = dict(fake=self.sigmoid(x[:,:1]), real=self.sigmoid(y[:,:1]), feat=x[:,1:], fake_2=None)
+        elif mode == 'final':
+            x, _ = self.unet(data['final_in'])
+            output = dict(fake=self.sigmoid(x[:,:1]))
+        else:
+            output = {}
+            for k in data:
+                x, _ = self.unet(data[k])
+                x = self.sigmoid(x)
+                output[k] = x
 
-        output = dict(fake=self.sigmoid(x[:,:1]), real=self.sigmoid(y[:,:1]), feat=x[:,1:])
         return output
 
 

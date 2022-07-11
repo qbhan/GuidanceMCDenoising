@@ -40,6 +40,11 @@ def logging(writer, epoch, relL2, best_relL2):
     writer.add_scalar('valid relL2 loss', relL2, epoch)
     writer.add_scalar('valid best relL2 loss', best_relL2, epoch)
 
+def logging_training(writer, epoch, summuries):
+    for m_losses in summuries:
+        for key in m_losses:
+            writer.add_scalar(key + ' train loss', m_losses[key], epoch)
+
 def train_epoch_kpcn(epoch, interfaces, dataloaders, params, args):
     assert 'train' in dataloaders, "argument `dataloaders` dictionary should contain `'train'` key."
     assert 'data_device' in params, "argument `params` dictionary should contain `'data_device'` key."
@@ -57,15 +62,17 @@ def train_epoch_kpcn(epoch, interfaces, dataloaders, params, args):
 
         # Main
         for itf in interfaces:
-            itf.preprocess(batch)
+            itf.preprocess(batch, args.use_single)
             itf.train_batch(batch)
-        
+    
+    summaries = []
     if not args.visual:
         for itf in interfaces:
-            itf.get_epoch_summary(mode='train', norm=len(dataloaders['train']))
+            summaries.append(itf.get_epoch_summary(mode='train', norm=len(dataloaders['train'])))
 
     itf.epoch += 1
     itf.cnt = 0
+    return summaries
 
 
 def validate_kpcn(epoch, interfaces, dataloaders, params, args):
@@ -100,7 +107,8 @@ def train(interfaces, dataloaders, params, args):
     print('[] Experiment: `{}`'.format(args.desc))
     print('[] # of interfaces : %d'%(len(interfaces)))
     print('[] Model training start...')
-    writer = SummaryWriter('summary3/'+args.desc)
+    # writer = SummaryWriter('summary_full/'+args.desc)
+    writer = SummaryWriter(args.summary + args.desc)
     # Start training
     for epoch in range(args.start_epoch, args.num_epoch):
         if len(interfaces) == 1:
@@ -109,7 +117,9 @@ def train(interfaces, dataloaders, params, args):
             raise NotImplementedError('Multiple interfaces')
 
         start_time = time.time()
-        train_epoch_kpcn(epoch, interfaces, dataloaders, params, args)
+        train_summaries = train_epoch_kpcn(epoch, interfaces, dataloaders, params, args)
+        logging_training(writer, epoch, train_summaries)
+
         print('[][] Elapsed time: %d'%(time.time() - start_time))
 
         for i, itf in enumerate(interfaces):
@@ -181,9 +191,9 @@ def init_data(args):
     # datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
     #     use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
     datasets['train'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
+        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, no_pmodel=args.no_p_model)
     datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
+        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, no_pmodel=args.no_p_model)
     # datasets['train'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
     #     use_g_buf=False, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
     # datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
@@ -254,6 +264,8 @@ def init_model(dataset, args):
                 print('Post-train PathNet backbones.')
             models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
             models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
+            # if self.use_single:
+            #     models['backbone'] = PathNet(ic=n_in, outc=n_out)
             if args.use_pretrain:
                 pass
         else:
@@ -274,7 +286,7 @@ def init_model(dataset, args):
         is_pretrained = (args.start_epoch != 0) and os.path.isfile(model_fn)
 
         if is_pretrained:
-            ck = torch.load(model_fn)
+            ck = torch.load(model_fn, map_location='cuda:{}'.format(args.device_id))
             for model_name in models:
                 try:
                     models[model_name].load_state_dict(ck['state_dict_' + model_name])
@@ -481,6 +493,8 @@ if __name__ == "__main__":
     # new arguments
     parser.add_argument('--use_second_strategy', action='store_true')
     parser.add_argument('--p_depth', type=int, default=2)
+    parser.add_argument('--no_p_model', action='store_true')
+    parser.add_argument('--use_single', action='store_true')
     
     args = parser.parse_args()
     

@@ -1348,6 +1348,21 @@ class FullImageDataset(Dataset):
                 for k in sample:
                     patch[k] = sample[k][...,i:i+patch_size,j:j+patch_size]
                 self.samples.append(patch)
+
+    def _gradients(self, buf):
+        """Compute the xy derivatives of the input buffer. This helper is used in the _preprocess_<base_model>(...) functions
+
+        Args:
+            buf(np.array)[h, w, c]: input image-like tensor.
+
+        Returns:
+            (np.array)[h, w, 2*c]: horizontal and vertical gradients of buf.
+        """
+        dx = buf[:, 1:, ...] - buf[:, :-1, ...]
+        dy = buf[1:, ...] - buf[:-1, ...]
+        dx = np.pad(dx, [[0, 0], [1, 0], [0, 0]], mode="constant") # zero padding to the left
+        dy = np.pad(dy, [[1, 0], [0, 0], [0, 0]], mode='constant')  # zero padding to the up
+        return np.concatenate([dx, dy], 2)
     
     def _load_all_spp_buffer(self, base_fn):
         assert base_fn.endswith('.npy'), base_fn
@@ -1464,14 +1479,20 @@ class FullImageDataset(Dataset):
                         _in[...,:1]
                         ), axis=3)
                 elif (self.base_model == self.KPCN):
-                    sample['kpcn_diffuse_in'] = np.concatenate((
-                        sample['kpcn_diffuse_in'], 
-                        _in[...,:1].mean(2)
-                        ), axis=2)
-                    sample['kpcn_specular_in'] = np.concatenate((
-                        sample['kpcn_specular_in'], 
-                        _in[...,:1].mean(2)
-                        ), axis=2)
+                    if not self.use_single:
+                        sample['kpcn_diffuse_in'] = np.concatenate((
+                            sample['kpcn_diffuse_in'], 
+                            _in[...,:1].mean(2)
+                            ), axis=2)
+                        sample['kpcn_specular_in'] = np.concatenate((
+                            sample['kpcn_specular_in'], 
+                            _in[...,:1].mean(2)
+                            ), axis=2)
+                    else:
+                        sample['kpcn_in'] = np.concatenate((
+                            sample['kpcn_in'], 
+                            _in[...,:1].mean(2)
+                            ), axis=2)
                 
                 # Path descriptor
                 sample['paths'] = np.array(_in[...,1:])

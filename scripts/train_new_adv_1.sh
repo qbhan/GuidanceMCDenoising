@@ -3,17 +3,18 @@ python train_adv.py \
     --batch_size 8 \
     --val_epoch 1 \
     --data_dir /mnt/ssd1/iycho/KPCN \
-    --model_name KPCN_adv_full_wadv_0.0001 \
-    --desc "KPCN_adv_full_wadv_0.0001" \
-    --num_epoch 10 \
+    --model_name KPCN_new_adv_1_full \
+    --desc "KPCN_new_adv_1_full" \
+    --num_epoch 20 \
     --lr_dncnn 1e-4 \
-    --manif_loss FMSE \
-    --pnet_out_size 12 \
-    --lr_pnet 1e-4 \
     --use_llpm_buf \
     --manif_learn \
+    --manif_loss FMSE \
     --w_manif 0.1 \
+    --pnet_out_size 12 \
     --use_adv \
     --w_adv 0.0001 \
     --start_epoch 0 \
-    --device_id 1
+    --device_id 0 \
+    --type 'new_adv_1' \
+    --save 'weights_full'

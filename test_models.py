@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import argparse
@@ -39,7 +40,7 @@ def load_input(filename, spp, args):
         dataset = FullImageDataset(filename, spp, 'kpcn',
                                    args.use_g_buf, args.use_sbmc_buf, 
                                    args.use_llpm_buf, args.pnet_out_size[0], 
-                                   load_gbuf=args.load_gbuf, load_pbuf=args.load_pbuf)
+                                   load_gbuf=args.load_gbuf, load_pbuf=args.load_pbuf, use_single=args.use_single)
     elif 'BMC' in args.model_name:
         dataset = FullImageDataset(filename, spp, 'sbmc',
                                    args.use_g_buf, args.use_sbmc_buf, 
@@ -53,28 +54,34 @@ def inference(interface, dataloader, spp, args):
     H, W = dataloader.dataset.h, dataloader.dataset.w
     PATCH_SIZE = dataloader.dataset.PATCH_SIZE
     out_rad = torch.zeros((3, H, W)).cuda()
-    out_rad_dict = {
-        'diffuse': torch.zeros((3, H, W)).cuda(),
-        'specular': torch.zeros((3, H, W)).cuda(),
-    }
-    out_kernel_dict = {
-        'diffuse': torch.zeros((21*21, H, W)).cuda(),
-        'specular': torch.zeros((21*21, H, W)).cuda()
-    }
-    out_score_dict = {
-        'fake_diffuse': torch.zeros((1, H, W)).cuda(),
-        'fake_specular': torch.zeros((1, H, W)).cuda(),
-        'real_diffuse': torch.zeros((1, H, W)).cuda(),
-        'real_specular': torch.zeros((1, H, W)).cuda(),
-    }
-    if args.use_skip or args.use_second_strategy or args.use_adv:
-        out_rad_dict['g_radiance'] = torch.zeros((3, H, W)).cuda() 
-        out_rad_dict['g_diffuse'] = torch.zeros((3, H, W)).cuda()
-        out_rad_dict['g_specular'] = torch.zeros((3, H, W)).cuda()
-        out_kernel_dict['g_diffuse'] = torch.zeros((21*21, H, W)).cuda()
-        out_kernel_dict['g_specular'] = torch.zeros((21*21, H, W)).cuda()
+    out_rad_dict, out_kernel_dict, out_score_dict = None, None, None
+    input_dict = {'diffuse_in': torch.zeros((3, H, W)).cuda(), 'specular_in': torch.zeros((3, H, W)).cuda(),}
+    if args.vis_branch:
+        out_rad_dict = {
+            'g_radiance': torch.zeros((3, H, W)).cuda(), 'p_radiance': torch.zeros((3, H, W)).cuda(),
+            'g_diffuse': torch.zeros((3, H, W)).cuda(), 'p_diffuse': torch.zeros((3, H, W)).cuda(),
+            'g_specular': torch.zeros((3, H, W)).cuda(), 'p_specular': torch.zeros((3, H, W)).cuda(),
+        }
+    if args.kernel_visualize:
+        out_kernel_dict = {
+            'diffuse': torch.zeros((21*21, H, W)).cuda(),
+            'specular': torch.zeros((21*21, H, W)).cuda()
+        }
+    if args.vis_score:
+        out_score_dict = {
+            's_diffuse': torch.zeros((1, H, W)).cuda(), 's_diffuse': torch.zeros((1, H, W)).cuda(),
+            's_g_diffuse': torch.zeros((1, H, W)).cuda(), 's_p_diffuse': torch.zeros((1, H, W)).cuda(),
+            's_g_specular': torch.zeros((1, H, W)).cuda(), 's_p_specular': torch.zeros((1, H, W)).cuda(),
+            'weight_diffuse': torch.zeros((1, H, W)).cuda(), 'weight_specular': torch.zeros((1, H, W)).cuda(),
+        }
+    # if args.kernel_visualize and (args.use_skip or args.use_second_strategy or args.use_adv):
+    #     out_rad_dict['g_radiance'] = torch.zeros((3, H, W)).cuda() 
+    #     out_rad_dict['g_diffuse'] = torch.zeros((3, H, W)).cuda()
+    #     out_rad_dict['g_specular'] = torch.zeros((3, H, W)).cuda()
+    #     out_kernel_dict['g_diffuse'] = torch.zeros((21*21, H, W)).cuda()
+    #     out_kernel_dict['g_specular'] = torch.zeros((21*21, H, W)).cuda()
     out_path = None
-
+    denoise_time = 0.0
     with torch.no_grad():
         for batch, i_start, j_start, i_end, j_end, i, j in dataloader:
             for k in batch:
@@ -82,66 +89,92 @@ def inference(interface, dataloader, spp, args):
                     continue
                 # batch[k] = batch[k].cuda(args.device_id)
                 batch[k] = batch[k].cuda()
-
             start = time.time()
             out, p_buffers, rad_dict, kernel_dict, score_dict = interface.validate_batch(batch, args.kernel_visualize)
+            end = time.time()
             # for k in rad_dict:
             #     print(k)
             pad_h = PATCH_SIZE - out.shape[2]
             pad_w = PATCH_SIZE - out.shape[3]
             if pad_h != 0 and pad_w != 0:
                 out = nn.functional.pad(out, (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
-                for k in rad_dict:
-                    rad_dict[k] = nn.functional.pad(rad_dict[k], (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
-                for k in kernel_dict:
-                    kernel_dict[k] = nn.functional.pad(kernel_dict[k], (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
-                if score_dict:
+                diffuse_in = nn.functional.pad(batch['kpcn_diffuse_in'][:,:3], (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
+                specular_in = nn.functional.pad(batch['kpcn_specular_in'][:,:3], (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
+                if args.vis_branch:
+                    for k in rad_dict:
+                        rad_dict[k] = nn.functional.pad(rad_dict[k], (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
+                if args.kernel_visualize:
+                    for k in kernel_dict: 
+                        kernel_dict[k] = nn.functional.pad(kernel_dict[k], (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
+                if args.vis_score:
                     for k in score_dict:
                         score_dict[k] = nn.functional.pad(score_dict[k], (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
-            if args.use_llpm_buf and (out_path is None):
-                if type(p_buffers) == dict:
-                    out_path = {}
-                    for key in p_buffers:
-                        b, s, c, h, w = p_buffers[key].shape
-                        out_path[key] = torch.zeros((s, c, H, W)).cuda()
-                elif type(p_buffers) == torch.Tensor:
-                    b, s, c, h, w = p_buffers.shape
-                    out_path = torch.zeros((s, c, H, W)).cuda()
-                else:
-                    assert False, 'P buffer type not defined.'
+            # if args.use_llpm_buf and (out_path is None):
+            #     if type(p_buffers) == dict:
+            #         out_path = {}
+            #         for key in p_buffers:
+            #             b, s, c, h, w = p_buffers[key].shape
+            #             out_path[key] = torch.zeros((s, c, H, W)).cuda()
+            #     elif type(p_buffers) == torch.Tensor:
+            #         b, s, c, h, w = p_buffers.shape
+            #         out_path = torch.zeros((s, c, H, W)).cuda()
+                # else:
+                #     print('P buffer type not defined.')
 
             for b in range(out.shape[0]):
                 out_rad[:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = out[b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
-                for k in rad_dict:
-                    out_rad_dict[k][:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = rad_dict[k][b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
-                for k in kernel_dict:
-                    out_kernel_dict[k][:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = kernel_dict[k][b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
-                if score_dict:
+                input_dict['diffuse_in'][:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = diffuse_in[b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
+                input_dict['specular_in'][:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = specular_in[b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
+                if args.vis_branch:
+                    for k in rad_dict:
+                        # print(k)
+                        out_rad_dict[k][:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = rad_dict[k][b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
+                if args.kernel_visualize:                        
+                    for k in kernel_dict:
+                        out_kernel_dict[k][:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = kernel_dict[k][b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
+                if args.vis_score:
                     for k in score_dict:
                         out_score_dict[k][:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = score_dict[k][b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
-                if args.use_llpm_buf:
-                    if type(p_buffers) == dict:
-                        for key in p_buffers:
-                            out_path[key][:,:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = p_buffers[key][b,:,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
-                    elif type(p_buffers) == torch.Tensor:
-                        out_path[:,:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = p_buffers[b,:,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
+                # if args.use_llpm_buf:
+                #     if type(p_buffers) == dict:
+                #         for key in p_buffers:
+                #             out_path[key][:,:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = p_buffers[key][b,:,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
+                    # elif type(p_buffers) == torch.Tensor:
+                    #     out_path[:,:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = p_buffers[b,:,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
+            denoise_time += (end - start)
+
+    # discard log transform of specular branch
+    # for k in input_dict:
+    #     if 'specular' in k:
+    #         input_dict[k] = torch.log(input_dict[k] - 1.0)
+    # for k in out_dict:
+    #     if 'specular' in k:
+    #         input_dict[k] = torch.log(input_dict[k] - 1.0)
 
     out_rad = out_rad.detach().cpu().numpy().transpose([1, 2, 0])
-    for k in out_rad_dict:
-        out_rad_dict[k] = out_rad_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
-    for k in out_kernel_dict:
-        out_kernel_dict[k] = out_kernel_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
-    if score_dict:
+    for k in input_dict:
+        if 'specular' in k:
+            input_dict[k] = torch.exp(input_dict[k] - 1.0)
+        input_dict[k] = input_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
+    if args.vis_branch:
+        for k in out_rad_dict:
+            if 'specular' in k:
+                out_rad_dict[k] = torch.exp(out_rad_dict[k] - 1.0)
+            out_rad_dict[k] = out_rad_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
+    if args.kernel_visualize:
+        for k in out_kernel_dict:
+            out_kernel_dict[k] = out_kernel_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
+    if args.vis_score:
         for k in out_score_dict:
             out_score_dict[k] = out_score_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
-    if args.use_llpm_buf:
-        if type(out_path) == dict:
-            for key in out_path:
-                out_path[key] = out_path[key].detach().cpu().numpy().transpose([2, 3, 0, 1])
-        elif type(out_path) == torch.Tensor:
-            out_path = out_path.detach().cpu().numpy().transpose([2, 3, 0, 1])
+        # if args.use_llpm_buf:
+        #     if type(out_path) == dict:
+        #         for key in out_path:
+        #             out_path[key] = out_path[key].detach().cpu().numpy().transpose([2, 3, 0, 1])
+        #     elif type(out_path) == torch.Tensor:
+        #         out_path = out_path.detach().cpu().numpy().transpose([2, 3, 0, 1])
 
-    return out_rad, out_path, out_rad_dict, out_kernel_dict, out_score_dict
+    return out_rad, out_path, out_rad_dict, out_kernel_dict, out_score_dict, input_dict, denoise_time
 
 
 def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_figures=False, rhf=False, quantize=False, pixels=[(500,500)]):
@@ -156,10 +189,14 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
     # num_metrics = 5 * 4 # (RelL2, RelL1, DSSIM, L1, MSE) * (linear, tmap w/o gamma, tmap gamma=2.2, tmap gamma=adaptive)
     # results = [[0 for i in range(len(scenes))] for j in range(num_metrics * len(spps))]
     # results_input = [[0 for i in range(len(scenes))] for j in range(num_metrics * len(spps))]
-    num_metrics = 6 * 4 # (RelL2, RelL1, DSSIM, L1, MSE) * (linear, tmap w/o gamma, tmap gamma=2.2, tmap gamma=adaptive)
-    results = [[0 for i in range(len(scenes)+1)] for j in range(num_metrics * len(spps))]
+    num_metrics = 1 + 6 * 4 + 1 # spp + (format, RelL2, RelL1, DSSIM, L1, MSE) * (linear, tmap w/o gamma, tmap gamma=2.2, tmap gamma=adaptive) + time
+    results = [[0 for i in range(len(scenes)+1)] for j in range(num_metrics * (len(spps)))]
+    # print('size1', len(results), len(results[0]))
     results_input = [[0 for i in range(len(scenes)+1)] for j in range(num_metrics * len(spps))]
 
+    # formatting
+    for i, spp in enumerate(spps):
+        results[num_metrics * i][0] = str(spp)
     if args.model_name.endswith('.pth'):
         p_model = os.path.join(args.save, args.model_name)
     else:
@@ -224,54 +261,57 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
                 engines, contexts = export_and_load_onnx_model(interfaces[0], p_model, dataloader)
                 return
             '''
-            out_rad, out_path, out_rad_dict, out_kernel_dict, out_score_dict = inference(interfaces[0], dataloader, spp, args)
-            
+            out_rad, out_path, out_rad_dict, out_kernel_dict, out_score_dict, input_dict, denoise_time = inference(interfaces[0], dataloader, spp, args)
+            print('denoised time for scene {} : {:.3f} sec'.format(scene, denoise_time))
             """
             Post processing
             """
             tgt = dataset.full_tgt
             ipt = dataset.full_ipt
-            if out_path is not None:
-                if rhf:
-                    print('Saving P-buffer as numpy file for RHF-like visualization...')
-                    if 'BMC' in args.model_name:
-                        print('Shape: ', out_path.shape)
-                        np.save(os.path.join(output_dir, 'p_buffer_%s_%s.npy'%(scene, args.model_name)), out_path)
-                    elif 'KPCN' in args.model_name:
-                        print('Shape: ', out_path['diffuse'].shape)
-                        np.save(os.path.join(output_dir, 'p_buffer_%s_%s.npy'%(scene, args.model_name)), out_path['diffuse'])
-                    print('Saved.')
-                    return
+            # if out_path is not None:
+            #     if rhf:
+            #         print('Saving P-buffer as numpy file for RHF-like visualization...')
+            #         if 'BMC' in args.model_name:
+            #             print('Shape: ', out_path.shape)
+            #             np.save(os.path.join(output_dir, 'p_buffer_%s_%s.npy'%(scene, args.model_name)), out_path)
+            #         elif 'KPCN' in args.model_name:
+            #             print('Shape: ', out_path['diffuse'].shape)
+            #             np.save(os.path.join(output_dir, 'p_buffer_%s_%s.npy'%(scene, args.model_name)), out_path['diffuse'])
+            #         print('Saved.')
+            #         return
                 
-                if type(out_path) == dict:
+            #     if type(out_path) == dict:
                 
-                    for key in out_path:
-                        out_path[key] = np.clip(np.mean(out_path[key], 2), 0.0, 1.0)
-                        assert len(out_path[key].shape) == 3, out_path[key].shape
-                        if out_path[key].shape[2] >= 3:
-                            out_path[key] = out_path[key][...,:3]
-                        else:
-                            tmp = np.mean(out_path[key], 2, keepdims=True)
-                            out_path[key] = np.concatenate((tmp,) * 3, axis=2)
-                        assert out_path[key].shape[2] == 3, out_path[key].shape
-                elif type(out_path) == torch.Tensor:
-                    out_path = np.clip(np.mean(out_path, 2), 0.0, 1.0)
-                    assert len(out_path.shape) == 3, out_path.shape
-                    if out_path.shape[2] >= 3:
-                        out_path = out_path[...,:3]
-                    else:
-                        tmp = np.mean(out_path, 2, keepdims=True)
-                        out_path = np.concatenate((tmp,) * 3, axis=2)
-                    assert out_path.shape[2] == 3, out_path.shape
+            #         for key in out_path:
+            #             out_path[key] = np.clip(np.mean(out_path[key], 2), 0.0, 1.0)
+            #             assert len(out_path[key].shape) == 3, out_path[key].shape
+            #             if out_path[key].shape[2] >= 3:
+            #                 out_path[key] = out_path[key][...,:3]
+            #             else:
+            #                 tmp = np.mean(out_path[key], 2, keepdims=True)
+            #                 out_path[key] = np.concatenate((tmp,) * 3, axis=2)
+            #             assert out_path[key].shape[2] == 3, out_path[key].shape
+            #     elif type(out_path) == torch.Tensor:
+            #         out_path = np.clip(np.mean(out_path, 2), 0.0, 1.0)
+            #         assert len(out_path.shape) == 3, out_path.shape
+            #         if out_path.shape[2] >= 3:
+            #             out_path = out_path[...,:3]
+            #         else:
+            #             tmp = np.mean(out_path, 2, keepdims=True)
+            #             out_path = np.concatenate((tmp,) * 3, axis=2)
+            #         assert out_path.shape[2] == 3, out_path.shape
 
             # Crop
             valid_size = 72
             crop = (128 - valid_size) // 2
             out_rad = out_rad[crop:-crop, crop:-crop, ...]
+            for k in input_dict:
+                input_dict[k] = input_dict[k][crop:-crop, crop:-crop, ...]
             for k in out_rad_dict:
                 out_rad_dict[k] = out_rad_dict[k][crop:-crop, crop:-crop, ...]
-            for k in out_kernel_dict:
-                out_kernel_dict[k] = out_kernel_dict[k][crop:-crop, crop:-crop, ...]
+            if args.kernel_visualize:
+                for k in out_kernel_dict:
+                    out_kernel_dict[k] = out_kernel_dict[k][crop:-crop, crop:-crop, ...]
             for k in out_score_dict:
                 out_score_dict[k] = out_score_dict[k][crop:-crop, crop:-crop, ...]
             if out_path is not None:
@@ -314,13 +354,24 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
             #     for k, metric in enumerate(metrics):
             #         results[(len(metrics) * t + k) * len(spps) + j][i] = metric(tmap(out_rad), tmap(tgt))
             #         results_input[(len(metrics) * t + k) * len(spps) + j][i] = metric(tmap(ipt), tmap(tgt))
+            final_index = num_metrics * (j + 1) - 1
+            # for t, tmap in enumerate(tmaps):
+            #     formatting = [tmaps_str[t]] + scenes
+            #     results[6*t] = formatting
+            #     for k, metric in enumerate(metrics):
+            #         results[(6 * t + k + 1) * len(spps)][0] = metrics_str[k]
+            #         results[(6 * t + k + 1) * len(spps) + j][i+1] = metric(tmap(out_rad), tmap(tgt))
+            #         results_input[(6 * t + k + 1) * len(spps) + j][i+1] = metric(tmap(ipt), tmap(tgt))
             for t, tmap in enumerate(tmaps):
                 formatting = [tmaps_str[t]] + scenes
-                results[6*t] = formatting
+                results[num_metrics * j + 6*t + 1] = formatting
                 for k, metric in enumerate(metrics):
-                    results[(6 * t + k + 1) * len(spps)][0] = metrics_str[k]
-                    results[(6 * t + k + 1) * len(spps) + j][i+1] = metric(tmap(out_rad), tmap(tgt))
-                    results_input[(6 * t + k + 1) * len(spps) + j][i+1] = metric(tmap(ipt), tmap(tgt))
+                    results[num_metrics * j + (6 * t + k + 2)][0] = metrics_str[k]
+                    results[num_metrics * j + (6 * t + k + 2)][i+1] = metric(tmap(out_rad), tmap(tgt))
+                    results_input[num_metrics * j + (6 * t + k + 2)][i+1] = metric(tmap(ipt), tmap(tgt))
+            
+            results[final_index][0] = 'time'
+            results[final_index][i+1] = denoise_time
 
             """
             Save
@@ -334,7 +385,7 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
                 t_ipt = tmaps[-1](ipt)
                 t_out = tmaps[-1](out_rad)
                 t_err = np.mean(np.clip(err**0.45, 0.0, 1.0), 2)
-                print(output_dir)
+
                 plt.imsave(os.path.join(output_dir, scene, 'target.png'), t_tgt)
                 #WriteImg(os.path.join(output_dir, scene, 'target.pfm'), tgt) # HDR image
                 plt.imsave(os.path.join(output_dir, scene, 'input_{}.png'.format(spp)), t_ipt)
@@ -354,26 +405,37 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
                     #     plt.imsave(os.path.join(output_dir, scene, 'crop_input_{}_{}_{}_{}.png'.format(spp, args.model_name, p[0], p[1])), t_ipt[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
                     #     plt.imsave(os.path.join(output_dir, scene, 'crop_output_{}_{}_{}_{}.png'.format(spp, args.model_name, p[0], p[1])), t_out[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
 
-            # if args.kernel_visualize:
-            #     for k in out_rad_dict:
-            #         kk = tmaps[-1](out_rad_dict[k])
-            #         plt.imsave(os.path.join(output_dir, scene, '{}_{}_{}.png'.format(spp, args.model_name,k)), kk)
-            #         # print(kk.shape)
-            #         # if k in ['diffuse, specular', 'g_diffuse', 'g_specular']:
-            #         for p in pixels:
-            #             plt.imsave(os.path.join(output_dir, scene, 'crop_{}_{}_{}_{}_{}.png'.format(spp, args.model_name,k,p[0],p[1])), kk[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
-            #     for k in out_kernel_dict:
-            #         for p in pixels:
-            #             kk = np.reshape(out_kernel_dict[k][p[0], p[1], ...], (21, 21))
-            #         plt.imsave(os.path.join(output_dir, scene, 'kernel_{}_{}_{}_{}_{}.png'.format(spp, args.model_name,k,p[0],p[1])), kk, cmap='gray')
 
+            if args.vis_branch:
+                for k in input_dict:
+                    kk = tmaps[-1](input_dict[k])
+                    plt.imsave(os.path.join(output_dir, scene, '{}_{}_{}.png'.format(spp, args.model_name,k)), kk)
+                for k in out_rad_dict:
+                    kk = tmaps[-1](out_rad_dict[k])
+                    plt.imsave(os.path.join(output_dir, scene, '{}_{}_{}.png'.format(spp, args.model_name,k)), kk)
+            if args.kernel_visualize:
+                    for p in pixels:
+                        plt.imsave(os.path.join(output_dir, scene, 'crop_{}_{}_{}_{}_{}.png'.format(spp, args.model_name,k,p[0],p[1])), kk[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
+                    for k in out_kernel_dict:
+                        for p in pixels:
+                            kk = np.reshape(out_kernel_dict[k][p[0], p[1], ...], (21, 21))
+                        plt.imsave(os.path.join(output_dir, scene, 'kernel_{}_{}_{}_{}_{}.png'.format(spp, args.model_name,k,p[0],p[1])), kk, cmap='gray')
+            if args.vis_score:
+                for k in out_score_dict:
+                    # print(out_score_dict[k].shape)
+                    plt.imsave(os.path.join(output_dir, scene, '{}_{}_{}.png'.format(spp, args.model_name,k)), out_score_dict[k][..., 0], cmap='gray')
+    # x, y = len(results), len(results[0])
+    # print('size', x, y)
+    # for i in range(x):
+    #     for j in range(y):
+    #         print(results[i][j])
     np.savetxt(os.path.join(output_dir, 'results_{}_{}.csv'.format(args.model_name, spps[-1])), results, fmt='%s', delimiter=',')
     np.savetxt(os.path.join(output_dir, 'results_input_%d.csv'%(spps[-1])), results_input, delimiter=',')
 
 
 if __name__ == "__main__":
     class Args(): # just for compatibility with argparse-related functions
-        output_dir = 'result7'
+        output_dir = 'result_full'
         save = '/root/WCMC/weights2/'
         model_name = 'SBMC_v2.0'
         single_gpu = True
@@ -393,7 +455,7 @@ if __name__ == "__main__":
 
         start_epoch = 0
         single_gpu = True
-        device_id = 3
+        device_id = 2
         lr_dncnn = 1e-4
 
         visual = False
@@ -412,35 +474,74 @@ if __name__ == "__main__":
         use_second_strategy = False
         use_single = False
         use_adv = False
+        separate = False
         p_depth = 2
-        kernel_visualize = False
+        strided_down = False
+        activation = 'relu'
+        output_type = 'linear'
+        disc_activation = 'relu'
+        no_p_model = False
+        type = None
 
         # feature analysis
         load_gbuf = True
         load_pbuf = True
+
+        # save
+        kernel_visualize = False
+        vis_branch = False
+        vis_score = False
     
     args = Args()
 
-    # input_dir = '/mnt/hdd1/iycho/KPCN/test/input/'
-    # scenes = ['bathroom', 'bathroom-3', 'car', 'car2', 'chair-room', 'chair', 'gharbi', 'hookah', 'kitchen-2', 'library-office', 'sitting-room-2', 'path-manifold', 'tableware', 'teapot']
-    input_dir = '/mnt/hdd1/kbhan/KPCN/test/input/'
-    scenes = ['bathroom-2', 'bathroom', 'bedroom', 'car', 'car2', 'coffee', 'cornell-box-2', 'cornell-box', 'dining-room-2', 'gharbi', 'glass-of-water', 'kitchen', 'lamp', 'living-room-2', 'living-room-3', 'living-room', 'material-testball', 'spaceship', 'staircase-2', 'staircase']
+    input_dir = '/mnt/hdd1/iycho/KPCN/test/input/'
+    # full scene
+    # scenes = ['bathroom', 'bathroom_v2', 'bathroom_v3', 'bathroom-3', 'bathroom-3_v2', 'bathroom-3_v3', 'car', 'car_v2', 'car_v3', 'car2', 'car2_v3', 'chair-room', 'chair-room_v2', 'chair', 'gharbi', 'hookah', 'hookah_v2', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'kitchen-2_v3', 'library-office', 'sitting-room-2', 'tableware']
+    # scenes with 32, 64 spp
+    scenes = ['bathroom_v3', 'bathroom-3_v2', 'car', 'car_v2', 'car_v3', 'chair', 'chair-room', 'chair-room_v2', 'gharbi', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'library-office', 'sitting-room-2', 'tableware']
+    
+    
+    # input_dir = '/mnt/hdd1/kbhan/KPCN/test/input/'
+    # scenes = ['bathroom-2', 'bathroom', 'bedroom', 'car', 'car2', 'coffee', 'cornell-box-2', 'cornell-box', 'dining-room-2', 'gharbi', 'glass-of-water', 'kitchen', 'lamp', 'living-room-2', 'living-room-3', 'living-room', 'material-testball', 'spaceship', 'staircase-2', 'staircase']
     # scenes = ['bathroom']
+
+
+    # spps = [2, 4, 8, 16]
+    # spps = [32, 64]
     spps = [8]
     torch.cuda.set_device(args.device_id)
+    args.output_dir = 'result_8spp_vis'
+
     # KPCN
     # print('KPCN')
-    # args.model_name = 'KPCN_full'
+    # args.model_name = 'KPCN'
     # args.pnet_out_size = [0]
     # args.use_llpm_buf, args.manif_learn = False, False
     # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
 
     # KPCN
     # print('KPCN_manif')
-    # args.model_name = 'KPCN_manif_b3'
+    # args.model_name = 'KPCN_manif_p12'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+
+    # KPCN
+    # print('KPCN_full')
+    # args.model_name = 'KPCN_full'
+    # args.pnet_out_size = [0]
+    # args.use_llpm_buf, args.manif_learn = False, False
+    # # spps = [2, 4, 8, 16]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # KPCN
+    # print('KPCN_manif_full')
+    # args.model_name = 'KPCN_manif_full'
     # args.pnet_out_size = [3]
     # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = False, True
+    # args.load_gbuf, args.load_pbuf = True, True
     # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
 
     # KPCN_skip
@@ -462,21 +563,68 @@ if __name__ == "__main__":
 
     # KPCN_adv
     # print('KPCN_adv')
-    # args.model_name = 'KPCN_adv_new_w0.001'
-    # args.pnet_out_size = [3]
+    # args.model_name = 'KPCN_adv_new_w0.0001_p12'
+    # args.pnet_out_size = [12]
     # args.use_llpm_buf, args.manif_learn = True, True
     # # args.use_single = True
     # args.use_adv = True
     # # args.kernel_visualize = True
+    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # KPCN_new_adv_1
+    print('KPCN_new_adv_1')
+    args.type = 'new_adv_1'
+    args.model_name = 'KPCN_new_adv_1_leaky_2'
+    args.pnet_out_size = [12]
+    args.use_llpm_buf, args.manif_learn = True, True
+    args.use_adv = True
+    args.disc_activation = "leaky_relu"
+    args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # KPCN_adv
+    # print('KPCN_adv')
+    # args.model_name = 'KPCN_new_adv_2_2'
+    # args.pnet_out_size = [3]
+    # args.use_llpm_buf, args.manif_learn = True, False
+    # args.use_single = True
+    # args.use_adv = True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # KPCN_adv
+    # print('KPCN_adv')
+    # args.model_name = 'KPCN_new_adv_2_disc_leaky_w0.0002'
+    # args.pnet_out_size = [3]
+    # args.use_llpm_buf, args.manif_learn = True, False
+    # args.use_single = True
+    # args.use_adv = True
+    # args.disc_activation = "leaky_relu"
     # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
 
     # LBMC
-    print('LBMC')
-    args.model_name = 'LBMC'
-    # args.pnet_out_size = [3]
+    # print('LBMC')
+    # args.model_name = 'LBMC'
+    # # args.pnet_out_size = [3]
+    # # args.disentangle = 'm11r11'
+    # args.use_g_buf, args.use_sbmc_buf, args.use_llpm_buf, args.manif_learn = True, False, False, False
+    # denoise(args, input_dir, spps=[8], scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # LBMC_manif
+    # print('LBMC_manif')
+    # args.model_name = 'LBMC_manif_w1'
+    # args.pnet_out_size = [6]
     # args.disentangle = 'm11r11'
-    args.use_g_buf, args.use_sbmc_buf, args.use_llpm_buf, args.manif_learn = True, False, False, False
-    denoise(args, input_dir, spps=[8], scenes=scenes, save_figures=True)
+    # args.use_g_buf, args.use_sbmc_buf, args.use_llpm_buf, args.manif_learn = True, False, True, True
+    # denoise(args, input_dir, spps=[8], scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # SBMC
+    # print('SBMC')
+    # args.model_name = 'SBMC'
+    # args.pnet_out_size = [0]
+    # args.disentangle = 'm11r11'
+    # args.use_sbmc_buf, args.use_llpm_buf, args.manif_learn = False, False, False
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
 
     
     """ Test cases

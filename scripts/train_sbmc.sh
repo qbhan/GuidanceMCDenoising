@@ -1,0 +1,11 @@
+python train_sbmc.py \
+    --single_gpu \
+    --batch_size 8 \
+    --val_epoch 1 \
+    --data_dir /mnt/ssd2/kbhan/SBMC \
+    --model_name SBMC_vanilla \
+    --desc "SBMC_vanilla" \
+    --use_sbmc_buf \
+    --num_epoch 10 \
+    --lr_dncnn 5e-4 \
+    --device_id 0

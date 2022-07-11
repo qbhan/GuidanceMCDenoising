@@ -21,33 +21,32 @@ from tensorboardX import SummaryWriter
 import configs
 from support.networks import PathNet
 # our strategy
-from support.networks import AdvKPCN, NewAdvKPCN_2, ModKPCN, PixelDiscriminator, NewAdvKPCN_1
+from support.networks import AdvKPCN, SingleStreamAdvKPCN
 from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
 from support.losses import RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
-from support.interfaces import AdvKPCNInterface, NewAdvKPCNInterface, NewAdvKPCNInterface1
+from support.interfaces import AdvKPCNInterface, SingleStreamAdvKPCNInterface
 from train_kpcn import validate_kpcn, train, train_epoch_kpcn
 
 # Gharbi et al. dependency
 sys.path.insert(1, configs.PATH_SBMC)
+"""
 try:
-    from sbmc import KPCN
+    from sbmc import KPCN # TODO !!
 except ImportError as error:
     print('Put appropriate paths in the configs.py file.')
     raise
-
+"""
 
 def init_data(args):
+    print("use_single", args.use_single)
+    
     # Initialize datasets
     datasets = {}
-    datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
-    datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
-    # datasets['train'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-    #     use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
-    # datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-    #     use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+    datasets['train'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
+        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single, no_pmodel=args.no_pmodel)
+    datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
+        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single, no_pmodel=args.no_pmodel)
     
     # Initialize dataloaders
     dataloaders = {}
@@ -83,51 +82,34 @@ def init_model(dataset, args):
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size // 2
             else:
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size
+            
             print('adv', n_in, pnet_out_size)
-            if not args.use_single:
-                print(args.type)
-                print(args.type == 'new_adv_1')
-                if args.type == 'new_adv_1':
-                    if args.manif_learn:
-                        n_in = dataset['train'].pnet_in_size
-                        n_out = pnet_out_size
-                        models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
-                        models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
-                        p_in = 10 + n_out + 1 #23
-                    else:
-                        p_in = 46
-                    models['dncnn'] = NewAdvKPCN_1(35, p_in, gen_activation=args.activation, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down)
-                else:
-                    models['dncnn'] = AdvKPCN(n_in, pnet_out=pnet_out_size)
-                    print('Initialize AdvKPCN for path descriptors (# of input channels: %d).'%(n_in))
-                    n_in = dataset['train'].pnet_in_size
-                    n_out = pnet_out_size
-                    models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
-                    models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
-                    # models['KPN'] = KPN(ic=50)
+            
+            if args.use_single:
+                models['dncnn'] = SingleStreamAdvKPCN(n_in, pnet_out=pnet_out_size)
+                print('Initialize SingleStreamAdvKPCN for path descriptors (# of input channels: %d).'%(n_in))
             else:
-                if not args.separate:
-                    if args.manif_learn:
-                        n_out = pnet_out_size
-                        models['backbone'] = PathNet(ic=n_in, outc=n_out)
-                        p_in = 20 + n_out + 1 #33
-                    else:
-                        p_in = 56
-                    print("NewAdvKPCN_2 with gen activation:", args.activation, ", gen output type", args.output_type, "and disc activation", args.disc_activation)
-                    # models['dncnn'] = NewAdvKPCN_2(45, 56, gen_activation=args.activation, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down, use_krn=args.use_krn)
-                    models['dncnn'] = NewAdvKPCN_2(45, p_in, gen_activation=args.activation, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down, use_krn=args.use_krn)
-                else:
-                    print("separate and single with gen activation:", args.activation, ", gen output type", args.output_type, "and disc activation", args.disc_activation)
-                    models['dncnn'] = ModKPCN(45, 56, activation=args.activation, output_type=args.output_type)
-                    models['dis'] = PixelDiscriminator(64, 1, strided_down=args.strided_down, activation=args.disc_activation)
-                    print("dncnn", models['dncnn'])
-                    print("dis", models['dis'])
+                models['dncnn'] = AdvKPCN(n_in, pnet_out=pnet_out_size)
                 print('Initialize AdvKPCN for path descriptors (# of input channels: %d).'%(n_in))
+            
+            n_in = dataset['train'].pnet_in_size
+            n_out = pnet_out_size
+
+            if args.use_single: # TODO are in and outsize correct?
+                models['backbone'] = PathNet(ic=n_in, outc=n_out)
+            else:
+                models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
+                models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
+            # models['KPN'] = KPN(ic=50)
         else:
             n_in = dataset['train'].dncnn_in_size
-            models['dncnn'] = AdvKPCN(n_in, pnet_out=pnet_out_size+2)
-            print('Initialize AdvKPCN for vanilla buffers (# of input channels: %d).'%(n_in))
-        
+            if args.use_single:
+                models['dncnn'] = SingleStreamAdvKPCN(n_in, pnet_out=pnet_out_size+2)
+                print('Initialize SingleStreamAdvKPCN for vanilla buffers (# of input channels: %d).'%(n_in))
+            else:
+                models['dncnn'] = AdvKPCN(n_in, pnet_out=pnet_out_size+2)
+                print('Initialize AdvKPCN for vanilla buffers (# of input channels: %d).'%(n_in))
+            
         # Load pretrained weights
         if len(list(itertools.product(*tmp))) == 1:
             model_fn = os.path.join(args.save, args.model_name + '.pth')
@@ -137,7 +119,7 @@ def init_model(dataset, args):
         is_pretrained = (args.start_epoch != 0) and os.path.isfile(model_fn)
 
         if is_pretrained:
-            ck = torch.load(model_fn, map_location='cuda:{}'.format(args.device_id))
+            ck = torch.load(model_fn)
             for model_name in models:
                 try:
                     models[model_name].load_state_dict(ck['state_dict_' + model_name])
@@ -211,12 +193,16 @@ def init_model(dataset, args):
 
         # Initialize losses (NOTE: modified for each model)
         loss_funcs = {
-            'l_diffuse': nn.L1Loss(),
-            'l_specular': nn.L1Loss(),
             'l_recon': nn.L1Loss(),
             'l_test': RelativeMSE(),
             'l_adv': nn.BCELoss(),
-        }
+        } 
+        if args.use_single:
+            n = 1
+            # TODO different for single stream
+        else:
+            loss_funcs['l_diffuse'] = nn.L1Loss()
+            loss_funcs['l_specular'] = nn.L1Loss()
         if args.manif_learn:
             if args.manif_loss == 'FMSE':
                 loss_funcs['l_manif'] = FeatureMSE(non_local = not args.local)
@@ -228,16 +214,11 @@ def init_model(dataset, args):
             print('Manifold loss: None (i.e., ablation study)')
 
         # Initialize a training interface (NOTE: modified for each model)
-        if not args.use_single:
-            if args.type == 'new_adv_1':
-                itf = NewAdvKPCNInterface1(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
-            else:
-                itf = AdvKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
+        itf = None
+        if args.use_single:
+            itf = SingleStreamAdvKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
         else:
-            if args.type == 'new_adv_1':
-                itf = NewAdvKPCNInterface1(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
-            else:    
-                itf = NewAdvKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
+            itf = AdvKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
         # if is_pretrained:
         #     # print('Use the checkpoint best error %.3e'%(args.best_err))
         #     itf.best_err = args.best_err
@@ -345,26 +326,12 @@ if __name__ == "__main__":
     # new arguments
     parser.add_argument('--use_skip', action='store_true')
     parser.add_argument('--use_adv', action='store_true')
-    parser.add_argument('--use_pretrain', action='store_true')
     parser.add_argument('--w_adv', nargs='+', default=[0.0001], 
                         help='ratio of the adversarial learning loss to \
                         the reconstruction loss.')
+                        
+    parser.add_argument('--no_pmodel', action='store_true')
     parser.add_argument('--use_single', action='store_true')
-    parser.add_argument('--separate', action='store_true')
-    parser.add_argument('--strided_down', action='store_true')
-
-    # (for NewAdvKPCN_2)
-    parser.add_argument('--activation', type=str, default='relu',
-                        help='`relu`, `leaky_relu`, `tanh`, or `elu`')
-    parser.add_argument('--output_type', type=str, default='linear',
-                        help='`linear`, `relu`, `leaky_relu`, `sigmoid`, `tanh`, `elu`, or `softplus`,')
-    parser.add_argument('--disc_activation', type=str, default='relu',
-                        help='`relu`, `leaky_relu`, or `linear`')
-    parser.add_argument('--use_krn', action='store_true')
-
-    # (for NewAdvKPCN_1)
-    parser.add_argument('--type', type=str, default='new_adv_2')
-    
     
     args = parser.parse_args()
     

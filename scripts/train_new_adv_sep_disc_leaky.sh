@@ -3,17 +3,15 @@ python train_adv.py \
     --batch_size 8 \
     --val_epoch 1 \
     --data_dir /mnt/ssd1/iycho/KPCN \
-    --model_name KPCN_adv_full_wadv_0.0001 \
-    --desc "KPCN_adv_full_wadv_0.0001" \
+    --model_name KPCN_new_adv_2_sep_disc_leaky_refine \
+    --desc "KPCN_new_adv_2_sep_disc_leaky_refine" \
     --num_epoch 10 \
     --lr_dncnn 1e-4 \
-    --manif_loss FMSE \
-    --pnet_out_size 12 \
-    --lr_pnet 1e-4 \
     --use_llpm_buf \
-    --manif_learn \
-    --w_manif 0.1 \
     --use_adv \
     --w_adv 0.0001 \
     --start_epoch 0 \
-    --device_id 1
+    --use_single \
+    --separate \
+    --device_id 1 \
+    --disc_activation "leaky_relu"

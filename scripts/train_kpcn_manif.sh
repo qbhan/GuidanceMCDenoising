@@ -2,9 +2,9 @@ python train_kpcn.py \
     --single_gpu \
     --batch_size 8 \
     --val_epoch 1 \
-    --data_dir /mnt/ssd1/iycho/KPCN \
-    --model_name KPCN_manif_no_gbuf \
-    --desc "KPCN_manif_no_gbuf" \
+    --data_dir /mnt/hdd1/kbhan/KPCN \
+    --model_name KPCN_manif_full_p12 \
+    --desc "KPCN_manif_full_p12" \
     --num_epoch 10 \
     --lr_dncnn 1e-4 \
     --manif_loss FMSE \
@@ -15,4 +15,6 @@ python train_kpcn.py \
     --manif_learn \
     --w_manif 0.1 \
     --train_branches \
-    --device_id 1
+    --device_id 1 \
+    --save 'weights_full' \
+    --summary 'summary_full'

@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader
 import configs
 from support.networks import PathNet
 from support.interfaces import SBMCInterface
-from support.datasets import MSDenoiseDataset
+from support.datasets import MSDenoiseDataset, DenoiseDataset
 from train_kpcn import validate_kpcn, train, train_epoch_kpcn
 from support.losses import TonemappedRelativeMSE, RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
 
@@ -42,6 +42,11 @@ def init_data(args):
         use_g_buf=True, use_sbmc_buf=args.use_sbmc_buf, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
     datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'sbmc', 'val', BS_VAL, 'grid',
         use_g_buf=True, use_sbmc_buf=args.use_sbmc_buf, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
+    # datasets['train'] = DenoiseDataset(args.data_dir, 8, 'sbmc', 'train', args.batch_size, 'random',
+    #     use_g_buf=True, use_sbmc_buf=True, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
+    # datasets['val'] = DenoiseDataset(args.data_dir, 8, 'sbmc', 'val', BS_VAL, 'random',
+    #     use_g_buf=True, use_sbmc_buf=True, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
+    
     
     # Initialize dataloaders
     dataloaders = {}
@@ -71,7 +76,7 @@ def init_model(dataset, args):
     for lr_pnet, pnet_out_size, w_manif in list(itertools.product(*tmp)):
         # Initialize models (NOTE: modified for each model)
         models = {}
-        print('Train a SBMC network.')
+        print('Train a SBMC network.', args.use_sbmc_buf)
         if args.use_llpm_buf and not args.use_sbmc_buf:
             if args.disentangle in ['m10r01', 'm11r01']:
                 n_in = dataset['train'].dncnn_in_size + pnet_out_size // 2
@@ -86,6 +91,7 @@ def init_model(dataset, args):
             models['backbone'] = PathNet(ic=n_in, outc=n_out)
         elif args.use_sbmc_buf:
             n_in = dataset['train'].dncnn_in_size
+            print('in_channel:', n_in)
             models['dncnn'] = Multisteps(n_in)
             print('Initialize the SBMC for vanilla buffers (# of input channels: %d).'%(n_in))
         elif args.use_g_buf and not args.manif_learn:
@@ -111,7 +117,8 @@ def init_model(dataset, args):
                 except RuntimeError:
                     new_state_dict = OrderedDict()
                     for k, v in ck['state_dict_' + model_name].items():
-                        name = k[7:]
+                        # name = k[7:]
+                        name = k
                         new_state_dict[name] = v
                     models[model_name].load_state_dict(new_state_dict)
             print('Pretraining weights are loaded.')
@@ -270,6 +277,8 @@ if __name__ == '__main__':
                         help='`m11r11`, `m10r01`, `m10r11`, or `m11r01`')
     parser.add_argument('--not_save', action='store_true',
                         help='do not save checkpoint (debugging purpose).')
+    parser.add_argument('--use_single', action='store_true',
+                        help='do not save checkpoint (debugging purpose).')
 
     args = parser.parse_args()
     
@@ -287,4 +296,6 @@ if __name__ == '__main__':
         if args.disentangle != 'm11r11' and s % 2 != 0:
             raise RuntimeError('Argument `pnet_out_size` should be a list of even numbers')
     
+    print('device:', args.device_id)
+    torch.cuda.set_device(f'cuda:{args.device_id}')
     main(args)
