@@ -194,6 +194,8 @@ class KPCNInterface(BaseInterface):
                 'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
                 'kpcn_albedo': batch['kpcn_albedo'],
             }
+
+            del p_buffer
         
         self.models['dncnn'].zero_grad()
         out = self._regress_forward(batch)
@@ -204,7 +206,7 @@ class KPCNInterface(BaseInterface):
             return
 
         self._logging(loss_dict)
-
+        del loss_dict
         self._optimization()
 
     def _manifold_forward(self, batch):
@@ -280,6 +282,9 @@ class KPCNInterface(BaseInterface):
 
                 loss_dict['l_manif_diffuse'] = L_manif_diffuse.detach()
                 loss_dict['l_manif_specular'] = L_manif_specular.detach()
+
+                del p_buffer_diffuse
+                del p_buffer_specular
             
             L_diffuse.backward()
             L_specular.backward()
@@ -303,6 +308,8 @@ class KPCNInterface(BaseInterface):
             loss_dict['l_total'] = L_total.detach()
             L_total.backward()
         
+        del diffuse
+        del specular  
         with torch.no_grad():
             loss_dict['rmse'] = self.loss_funcs['l_test'](total, tgt_total).detach()
         self.cnt += 1
@@ -369,8 +376,8 @@ class KPCNInterface(BaseInterface):
         out = self._regress_forward(batch)
         rad_dict = {'diffuse': out['diffuse'],
                     'specular': out['specular']}
-        kernel_dict = {'diffuse':out['k_diffuse'],
-                      'specular': out['k_specular']}
+        kernel_dict = {'diffuse': None,
+                      'specular': None}
         
         tgt_total = crop_like(batch['target_total'], out['radiance'])
         L_total = self.loss_funcs['l_test'](out['radiance'], tgt_total)
@@ -1049,7 +1056,7 @@ class NewAdvKPCNInterface1(BaseInterface):
         self.cnt = 0
         self.epoch = 0
         self.w_adv = w_adv
-        self.kernel_apply = ops.KernelApply(softmax=True, splat=False)
+        # self.kernel_apply = ops.KernelApply(softmax=True, splat=False)
         self.separate = args.separate
         self.manif_learn = manif_learn
 
@@ -1094,6 +1101,7 @@ class NewAdvKPCNInterface1(BaseInterface):
                 assert c >= 2
                 if self.disentanglement_option == 'm11r11':
                     out_manif = p_buffers
+                    pass
                 # elif self.disentanglement_option == 'm10r01':
                 #     out_manif = {
                 #             'diffuse': p_buffers['diffuse'][:,:,c//2:,...],
@@ -1134,6 +1142,9 @@ class NewAdvKPCNInterface1(BaseInterface):
                     'paths_diffuse': torch.cat([p_buffers['diffuse'].mean(1), p_var_diffuse], dim=1),
                     'paths_specular': torch.cat([p_buffers['specular'].mean(1), p_var_specular], dim=1),
                 }
+                # del out_manif
+                # del p_buffer_diffuse
+                # del p_buffer_specular
             else:
                 p_var = batch['paths'].var(1).mean(1, keepdims=True).detach()
                 p_var /= batch['paths'].shape[1] # spp
@@ -1155,7 +1166,7 @@ class NewAdvKPCNInterface1(BaseInterface):
             out = self._regress_forward(batch, separate=self.separate)
 
             loss_dict = self._backward(batch, out, out_manif)
-
+            del out_manif
             if grad_hook_mode: # do not update this model
                 return
 
@@ -1168,76 +1179,77 @@ class NewAdvKPCNInterface1(BaseInterface):
 
 
     def _train_gan(self, batch, vis=False):
-        loss_dict = {}
-        real_target = torch.tensor([1.0]).cuda()
-        fake_target = torch.tensor([0.0]).cuda()
-        # train discriminator first
-        self.models['dis'].zero_grad()
-        out = self.models['dncnn'](batch, False)
-        g_rad, p_rad= out['g_radiance'], out['p_radiance']
-        dis_batch = {
-        'target_in': torch.cat([crop_like(batch['target_total'], g_rad), crop_like(batch["kpcn_in"][:,20:], g_rad), crop_like(batch["paths"].mean(1), g_rad)], 1),
-        'g_rad_in': torch.cat([g_rad, crop_like(batch["kpcn_in"][:,20:], g_rad), crop_like(batch["paths"].mean(1), g_rad)], 1),
-        'p_rad_in': torch.cat([p_rad, crop_like(batch["kpcn_in"][:,20:], p_rad), crop_like(batch["paths"].mean(1), p_rad)], 1),
-        }
-        dis_out = self.models['dis'](dis_batch, mode='adv_2')
-        g_score, p_score, gt_score = dis_out['fake'], dis_out['fake_2'], dis_out['real']
-        L_D_g = F.binary_cross_entropy_with_logits(g_score, fake_target.expand_as(g_score))
-        L_D_p = F.binary_cross_entropy_with_logits(p_score, fake_target.expand_as(p_score))
-        L_D_gt = F.binary_cross_entropy_with_logits(gt_score, real_target.expand_as(gt_score))
-        loss_dict['l_D_g'] = L_D_g.detach()
-        loss_dict['l_D_p'] = L_D_p.detach()
-        loss_dict['l_D_gt'] = L_D_gt.detach()
-        L_D = 0.25 * (L_D_g + L_D_p + 2.0 * L_D_gt)
-        loss_dict['l_D'] = L_D_gt.detach()
-        L_D.backward()
-        self.optims['optim_dis'].step()
-        del L_D
-        del g_score, p_score, gt_score
-
-        # train denoiser(generator) later
-        self.models['dncnn'].zero_grad()
-        out = self.models['dncnn'](batch, True)
-        g_rad, p_rad, g_kernel, p_kernel = out['g_radiance'], out['p_radiance'], out['g_kernel'], out['p_kernel']
-        dis_batch = {
-        'target_in': torch.cat([batch['target_total'], crop_like(batch["kpcn_in"][:,20:], g_rad), crop_like(batch["paths"].mean(1), g_rad)], 1),
-        'g_rad_in': torch.cat([g_rad, crop_like(batch["kpcn_in"][:,20:], g_rad), crop_like(batch["paths"].mean(1), g_rad)], 1),
-        'p_rad_in': torch.cat([p_rad, crop_like(batch["kpcn_in"][:,20:], p_rad), crop_like(batch["paths"].mean(1), p_rad)], 1),
-        }
-        dis_out = self.models['dis'](dis_batch, mode='adv_2')
-        g_score, p_score, gt_score = dis_out['fake'], dis_out['fake_2'], dis_out['real']
-        new_kernel = (g_kernel * g_score + p_kernel * p_score).contiguous()
-        buffer = crop_like(batch["kpcn_buffer"], new_kernel).contiguous()
-        final_radiance, _ = self.kernel_apply(buffer, new_kernel)
-
-        tgt_total = crop_like(batch['target_total'], final_radiance)
-        L_g = self.loss_funcs['l_recon'](tgt_total, g_rad)
-        L_p = self.loss_funcs['l_recon'](tgt_total, p_rad)
-        L_final = self.loss_funcs['l_recon'](tgt_total, final_radiance)
-        L_recon = 0.25 * (L_g + L_p  + 2.0 * L_final)
-        loss_dict['l_g'] = L_g.detach()
-        loss_dict['l_p'] = L_p.detach()
-        loss_dict['l_final'] = L_p.detach()
-        # adversarial losses
-        L_g_adv = self.loss_funcs['l_adv'](g_score, torch.ones_like(g_score).cuda())
-        L_p_adv = self.loss_funcs['l_adv'](p_score, torch.ones_like(p_score).cuda())
-        dis_batch = {
-            'final_in': torch.cat([final_radiance, crop_like(batch["kpcn_in"][:,20:], final_radiance), crop_like(batch["paths"].mean(1), final_radiance)], 1),
-        }
-        final_score = self.models['dis'](dis_batch, mode='final')['fake']
-        L_final_adv = self.loss_funcs['l_adv'](final_score, torch.ones_like(final_score).cuda())
-        loss_dict['l_g_adv'] = L_g_adv.detach()
-        loss_dict['l_p_adv'] = L_p_adv.detach()
-        loss_dict['l_final_adv'] = L_final_adv.detach()
-        L_adv = 0.25 * (L_g_adv + L_p_adv + 2.0 * L_final_adv)
-
-        L_G = L_recon + self.w_adv * L_adv
-        L_G.backward()
-        self.optims['optim_dncnn'].step()
-
-        # logging
-        self._logging(loss_dict)
-
+        assert NotImplementedError
+#        loss_dict = {}
+#        real_target = torch.tensor([1.0]).cuda()
+#        fake_target = torch.tensor([0.0]).cuda()
+#        # train discriminator first
+#        self.models['dis'].zero_grad()
+#        out = self.models['dncnn'](batch, False)
+#        g_rad, p_rad= out['g_radiance'], out['p_radiance']
+#        dis_batch = {
+#        'target_in': torch.cat([crop_like(batch['target_total'], g_rad), crop_like(batch["kpcn_in"][:,20:], g_rad), crop_like(batch["paths"].mean(1), g_rad)], 1),
+#        'g_rad_in': torch.cat([g_rad, crop_like(batch["kpcn_in"][:,20:], g_rad), crop_like(batch["paths"].mean(1), g_rad)], 1),
+#        'p_rad_in': torch.cat([p_rad, crop_like(batch["kpcn_in"][:,20:], p_rad), crop_like(batch["paths"].mean(1), p_rad)], 1),
+#        }
+#        dis_out = self.models['dis'](dis_batch, mode='adv_2')
+#        g_score, p_score, gt_score = dis_out['fake'], dis_out['fake_2'], dis_out['real']
+#        L_D_g = F.binary_cross_entropy_with_logits(g_score, fake_target.expand_as(g_score))
+#        L_D_p = F.binary_cross_entropy_with_logits(p_score, fake_target.expand_as(p_score))
+#        L_D_gt = F.binary_cross_entropy_with_logits(gt_score, real_target.expand_as(gt_score))
+#        loss_dict['l_D_g'] = L_D_g.detach()
+#        loss_dict['l_D_p'] = L_D_p.detach()
+#        loss_dict['l_D_gt'] = L_D_gt.detach()
+#        L_D = 0.25 * (L_D_g + L_D_p + 2.0 * L_D_gt)
+#        loss_dict['l_D'] = L_D_gt.detach()
+#        L_D.backward()
+#        self.optims['optim_dis'].step()
+#        del L_D
+#        del g_score, p_score, gt_score
+#
+#        # train denoiser(generator) later
+#        self.models['dncnn'].zero_grad()
+#        out = self.models['dncnn'](batch, True)
+#        g_rad, p_rad, g_kernel, p_kernel = out['g_radiance'], out['p_radiance'], out['g_kernel'], out['p_kernel']
+#        dis_batch = {
+#        'target_in': torch.cat([batch['target_total'], crop_like(batch["kpcn_in"][:,20:], g_rad), crop_like(batch["paths"].mean(1), g_rad)], 1),
+#        'g_rad_in': torch.cat([g_rad, crop_like(batch["kpcn_in"][:,20:], g_rad), crop_like(batch["paths"].mean(1), g_rad)], 1),
+#        'p_rad_in': torch.cat([p_rad, crop_like(batch["kpcn_in"][:,20:], p_rad), crop_like(batch["paths"].mean(1), p_rad)], 1),
+#        }
+#        dis_out = self.models['dis'](dis_batch, mode='adv_2')
+#        g_score, p_score, gt_score = dis_out['fake'], dis_out['fake_2'], dis_out['real']
+#        new_kernel = (g_kernel * g_score + p_kernel * p_score).contiguous()
+#        buffer = crop_like(batch["kpcn_buffer"], new_kernel).contiguous()
+#        final_radiance, _ = self.kernel_apply(buffer, new_kernel)
+#
+#        tgt_total = crop_like(batch['target_total'], final_radiance)
+#        L_g = self.loss_funcs['l_recon'](tgt_total, g_rad)
+#        L_p = self.loss_funcs['l_recon'](tgt_total, p_rad)
+#        L_final = self.loss_funcs['l_recon'](tgt_total, final_radiance)
+#        L_recon = 0.25 * (L_g + L_p  + 2.0 * L_final)
+#        loss_dict['l_g'] = L_g.detach()
+#        loss_dict['l_p'] = L_p.detach()
+#        loss_dict['l_final'] = L_p.detach()
+#        # adversarial losses
+#        L_g_adv = self.loss_funcs['l_adv'](g_score, torch.ones_like(g_score).cuda())
+#        L_p_adv = self.loss_funcs['l_adv'](p_score, torch.ones_like(p_score).cuda())
+#        dis_batch = {
+#            'final_in': torch.cat([final_radiance, crop_like(batch["kpcn_in"][:,20:], final_radiance), crop_like(batch["paths"].mean(1), final_radiance)], 1),
+#        }
+#        final_score = self.models['dis'](dis_batch, mode='final')['fake']
+#        L_final_adv = self.loss_funcs['l_adv'](final_score, torch.ones_like(final_score).cuda())
+#        loss_dict['l_g_adv'] = L_g_adv.detach()
+#        loss_dict['l_p_adv'] = L_p_adv.detach()
+#        loss_dict['l_final_adv'] = L_final_adv.detach()
+#        L_adv = 0.25 * (L_g_adv + L_p_adv + 2.0 * L_final_adv)
+#
+#        L_G = L_recon + self.w_adv * L_adv
+#        L_G.backward()
+#        self.optims['optim_dncnn'].step()
+#
+#        # logging
+#        self._logging(loss_dict)
+#
 
     def _manifold_forward(self, batch):
         p_buffer_diffuse = self.models['backbone_diffuse'](batch)
@@ -1247,7 +1259,6 @@ class NewAdvKPCNInterface1(BaseInterface):
             'specular': p_buffer_specular
         }
         return p_buffers
-        return 
 
     def _regress_forward(self, batch, vis=False, separate=False):
         # print(next(self.models['dncnn'].parameters()).device)
@@ -1344,6 +1355,8 @@ class NewAdvKPCNInterface1(BaseInterface):
             L_total_diff += L_manif_diffuse * self.w_manif
             L_total_spec += L_manif_specular * self.w_manif
 
+            del p_buffer_diffuse, p_buffer_specular
+
         L_total_diff.backward()
         L_total_spec.backward()
         
@@ -1361,6 +1374,15 @@ class NewAdvKPCNInterface1(BaseInterface):
         with torch.no_grad():
             loss_dict['rmse'] = self.loss_funcs['l_test'](final_radiance, tgt_total).detach()
         self.cnt += 1
+
+        del final_radiance, g_radiance, p_radiance
+        del final_diffuse, g_diffuse, p_diffuse
+        del final_specular, g_specular, p_specular
+        del gt_diff_score, gt_spec_score
+        del g_diff_score, g_spec_score
+        del p_diff_score, p_spec_score
+        del tgt_diffuse, tgt_specular, tgt_total
+
         return loss_dict
 
     def _logging(self, loss_dict):

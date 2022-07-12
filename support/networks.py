@@ -12,6 +12,7 @@ except ImportError as error:
     print('Put appropriate paths in the configs.py file.')
     raise
 # from sbmc import modules as ops
+from torch_utils import WeightedFilter
 
 # imports for second stragety
 import numpy as np
@@ -404,7 +405,8 @@ class NewAdvKPCN_1(nn.Module):
         self.D_diffuse = PixelDiscriminator(self.dis_in, 1 + 50, strided_down, activation=disc_activtion)
         self.D_specular = PixelDiscriminator(self.dis_in, 1 + 50, strided_down, activation=disc_activtion)
 
-        self.kernel_apply = ops.KernelApply(softmax=True, splat=False)
+#        self.kernel_apply = ops.KernelApply(softmax=True, splat=False)
+        self.kernel_apply = WeightedFilter(channels=3, kernel_size=ksize, bias=False, splat=False)
 
         self.R_diffuse = ops.ConvChain(
             100, 1, depth=5, width=width, ksize=5,
@@ -415,6 +417,16 @@ class NewAdvKPCN_1(nn.Module):
             100, 1, depth=5, width=width, ksize=5,
             activation="relu", weight_norm=False, pad=True,
             output_type="sigmoid")
+
+        # self.R_diffuse = ops.ConvChain(
+        #     100, ksize*ksize, depth=5, width=width, ksize=5,
+        #     activation="relu", weight_norm=False, pad=True,
+        #     output_type="sigmoid")
+
+        # self.R_specular = ops.ConvChain(
+        #     100, ksize*ksize, depth=5, width=width, ksize=5,
+        #     activation="relu", weight_norm=False, pad=True,
+        #     output_type="sigmoid")
 
 
     def forward(self, data, vis=False):
@@ -450,20 +462,20 @@ class NewAdvKPCN_1(nn.Module):
         # dis_feat = torch.cat((data["kpcn_diffuse_in"][:,:10], data['kpcn_specular_in'], data['paths']), dim=1)
 
         # Process the diffuse and specular channels independently
-        g_k_diffuse = self.G_diffuse(data["kpcn_diffuse_in"])
-        g_k_specular = self.G_specular(data["kpcn_specular_in"])
-        p_k_diffuse = self.P_diffuse(p_diffuse_in)
-        p_k_specular = self.P_specular(p_specular_in)
+        g_k_diffuse = self.G_diffuse(data["kpcn_diffuse_in"]).contiguous()
+        g_k_specular = self.G_specular(data["kpcn_specular_in"]).contiguous()
+        p_k_diffuse = self.P_diffuse(p_diffuse_in).contiguous()
+        p_k_specular = self.P_specular(p_specular_in).contiguous()
 
         b_diffuse = crop_like(data["kpcn_diffuse_buffer"],
                               g_k_diffuse).contiguous()
         b_specular = crop_like(data["kpcn_specular_buffer"],
                                g_k_specular).contiguous()
 
-        g_r_diffuse, _ = self.kernel_apply(b_diffuse, g_k_diffuse)
-        g_r_specular, _ = self.kernel_apply(b_specular, g_k_specular)
-        p_r_diffuse, _ = self.kernel_apply(b_diffuse, p_k_diffuse)
-        p_r_specular, _ = self.kernel_apply(b_specular, p_k_specular)
+        g_r_diffuse = self.kernel_apply(b_diffuse, F.softmax(g_k_diffuse, dim=1))
+        g_r_specular = self.kernel_apply(b_specular, F.softmax(g_k_specular, dim=1))
+        p_r_diffuse = self.kernel_apply(b_diffuse, F.softmax(p_k_diffuse, dim=1))
+        p_r_specular = self.kernel_apply(b_specular, F.softmax(p_k_specular, dim=1))
     
 
         albedo = crop_like(data["kpcn_albedo"], g_r_diffuse).contiguous()
@@ -491,10 +503,12 @@ class NewAdvKPCN_1(nn.Module):
         dis_out_diffuse = self.D_diffuse(batch_diffuse, 'newadv1')
         dis_out_specular = self.D_specular(batch_specular, 'newadv1')
 
+        # First attempt
         # use hidden embeddings to find interpolation weight
         # due to sigmoid activation, it will have value between 0 and 1
         int_weight_diffuse = self.R_diffuse(torch.cat([dis_out_diffuse['diffuse_G'][:, 1:], dis_out_diffuse['diffuse_P'][:, 1:]], dim=1))
         int_weight_specular = self.R_specular(torch.cat([dis_out_specular['specular_G'][:, 1:], dis_out_specular['specular_P'][:, 1:]], dim=1))
+#        int_weight_diffuse, int_weight_specular = None, None
 
 
         # Interpolate new kernel using the scores
@@ -504,8 +518,15 @@ class NewAdvKPCN_1(nn.Module):
         n_k_diffuse = g_k_diffuse * int_weight_diffuse + p_k_diffuse * (1.0 - int_weight_diffuse)
         n_k_specular = g_k_specular * int_weight_specular + p_k_specular * (1.0 - int_weight_specular)
 
-        r_diffuse, _ = self.kernel_apply(b_diffuse, n_k_diffuse)
-        r_specular, _ = self.kernel_apply(b_specular, n_k_specular)
+        # Secont attempt
+        # use hidden embeddings to predict a new kernel to be applied
+        # might need a constraint that can make the new kernel not to diverge
+        # n_k_diffuse = self.R_diffuse(torch.cat([dis_out_diffuse['diffuse_G'][:, 1:], dis_out_diffuse['diffuse_P'][:, 1:]], dim=1))
+        # n_k_specular = self.R_specular(torch.cat([dis_out_specular['specular_G'][:, 1:], dis_out_specular['specular_P'][:, 1:]], dim=1))
+
+
+        r_diffuse = self.kernel_apply(b_diffuse, F.softmax(n_k_diffuse, dim=1).contiguous())
+        r_specular = self.kernel_apply(b_specular, F.softmax(n_k_specular, dim=1).contiguous())
 
         albedo = crop_like(data["kpcn_albedo"], r_diffuse).contiguous()
         final_specular = torch.exp(r_specular) - 1

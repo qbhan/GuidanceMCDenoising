@@ -230,7 +230,7 @@ class DenoiseDataset(Dataset):
             else:
                 self.dncnn_in_size += 38 # path weight, p-buffer, variance
 
-        print('dncnn_in_size', self.dncnn_in_size)
+        # print('dncnn_in_size', self.dncnn_in_size)
 
         # TODO(cho): OptaGen에서 데이터 생성할 때부터 metadata로 아래 정보를 넣자.
         # Raw feature ranges

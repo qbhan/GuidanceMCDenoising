@@ -2,13 +2,13 @@ python train_kpcn.py \
     --single_gpu \
     --batch_size 8 \
     --val_epoch 1 \
-    --data_dir /mnt/hdd1/kbhan/KPCN \
-    --model_name KPCN_manif_full_p12 \
-    --desc "KPCN_manif_full_p12" \
+    --data_dir /mnt/ssd2/kbhan/KPCN \
+    --model_name KPCN_manif_p12 \
+    --desc "KPCN_manif_p12" \
     --num_epoch 10 \
     --lr_dncnn 1e-4 \
     --manif_loss FMSE \
-    --pnet_out_size 3 \
+    --pnet_out_size 12 \
     --lr_dncnn 1e-4 \
     --lr_pnet 1e-4 \
     --use_llpm_buf \
@@ -16,5 +16,5 @@ python train_kpcn.py \
     --w_manif 0.1 \
     --train_branches \
     --device_id 1 \
-    --save 'weights_full' \
-    --summary 'summary_full'
+    --save 'weights_8' \
+    --summary 'summary_8'
