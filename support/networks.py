@@ -355,11 +355,12 @@ class NewAdvKPCN_1(nn.Module):
         width(int): number of feature channels in each branch.
     """
 
-    def __init__(self, g_in, p_in, ksize=21, depth=9, width=100, pnet_out=5, gen_activation="relu", disc_activtion="relu", output_type="linear", strided_down=False):
+    def __init__(self, g_in, p_in, ksize=21, depth=9, width=100, pnet_out=5, gen_activation="relu", disc_activtion="relu", output_type="linear", strided_down=False, interpolation='kernel'):
         super(NewAdvKPCN_1, self).__init__()
 
         self.ksize = ksize
         self.pnet_size = pnet_out + 2
+        self.interpolation = interpolation
 
         self.G_diffuse = ops.ConvChain(
             g_in, ksize*ksize, depth=depth, width=width, ksize=5,
@@ -408,25 +409,27 @@ class NewAdvKPCN_1(nn.Module):
 #        self.kernel_apply = ops.KernelApply(softmax=True, splat=False)
         self.kernel_apply = WeightedFilter(channels=3, kernel_size=ksize, bias=False, splat=False)
 
-        self.R_diffuse = ops.ConvChain(
-            100, 1, depth=5, width=width, ksize=5,
-            activation="relu", weight_norm=False, pad=True,
-            output_type="sigmoid")
+        if self.interpolation != 'direct':
+            self.R_diffuse = ops.ConvChain(
+                100, 1, depth=5, width=width, ksize=5,
+                activation="relu", weight_norm=False, pad=True,
+                output_type="sigmoid")
 
-        self.R_specular = ops.ConvChain(
-            100, 1, depth=5, width=width, ksize=5,
-            activation="relu", weight_norm=False, pad=True,
-            output_type="sigmoid")
+            self.R_specular = ops.ConvChain(
+                100, 1, depth=5, width=width, ksize=5,
+                activation="relu", weight_norm=False, pad=True,
+                output_type="sigmoid")
 
-        # self.R_diffuse = ops.ConvChain(
-        #     100, ksize*ksize, depth=5, width=width, ksize=5,
-        #     activation="relu", weight_norm=False, pad=True,
-        #     output_type="sigmoid")
+        else:
+            self.R_diffuse = ops.ConvChain(
+                100, ksize*ksize, depth=5, width=width, ksize=5,
+                activation="relu", weight_norm=False, pad=True,
+                output_type="sigmoid")
 
-        # self.R_specular = ops.ConvChain(
-        #     100, ksize*ksize, depth=5, width=width, ksize=5,
-        #     activation="relu", weight_norm=False, pad=True,
-        #     output_type="sigmoid")
+            self.R_specular = ops.ConvChain(
+                100, ksize*ksize, depth=5, width=width, ksize=5,
+                activation="relu", weight_norm=False, pad=True,
+                output_type="sigmoid")
 
 
     def forward(self, data, vis=False):
@@ -510,23 +513,31 @@ class NewAdvKPCN_1(nn.Module):
         int_weight_specular = self.R_specular(torch.cat([dis_out_specular['specular_G'][:, 1:], dis_out_specular['specular_P'][:, 1:]], dim=1))
 #        int_weight_diffuse, int_weight_specular = None, None
 
+        if self.interpolation == 'kernel':
+            # Interpolate new kernel using the scores
+            # This part should be more sophisticated
+            # n_k_diffuse = g_k_diffuse * dis_out['diffuse_G'] + p_k_diffuse * dis_out['diffuse_P']
+            # n_k_specular = g_k_specular * dis_out['specular_G'] + p_k_specular * dis_out['specular_P']
+            n_k_diffuse = g_k_diffuse * int_weight_diffuse + p_k_diffuse * (1.0 - int_weight_diffuse)
+            n_k_specular = g_k_specular * int_weight_specular + p_k_specular * (1.0 - int_weight_specular)
+            r_diffuse = self.kernel_apply(b_diffuse, F.softmax(n_k_diffuse, dim=1).contiguous())
+            r_specular = self.kernel_apply(b_specular, F.softmax(n_k_specular, dim=1).contiguous())
 
-        # Interpolate new kernel using the scores
-        # This part should be more sophisticated
-        # n_k_diffuse = g_k_diffuse * dis_out['diffuse_G'] + p_k_diffuse * dis_out['diffuse_P']
-        # n_k_specular = g_k_specular * dis_out['specular_G'] + p_k_specular * dis_out['specular_P']
-        n_k_diffuse = g_k_diffuse * int_weight_diffuse + p_k_diffuse * (1.0 - int_weight_diffuse)
-        n_k_specular = g_k_specular * int_weight_specular + p_k_specular * (1.0 - int_weight_specular)
+        elif self.interpolation == 'image':
+            # Interpolate the images to get the final image
+            # in order to reduce redundant computation
+            n_k_diffuse, n_k_specular = None, None
+            r_diffuse = g_r_diffuse * int_weight_diffuse + p_r_diffuse * (1.0 - int_weight_diffuse)
+            r_specular = g_r_specular * int_weight_specular + p_r_specular * (1.0 - int_weight_specular)
 
-        # Secont attempt
-        # use hidden embeddings to predict a new kernel to be applied
-        # might need a constraint that can make the new kernel not to diverge
-        # n_k_diffuse = self.R_diffuse(torch.cat([dis_out_diffuse['diffuse_G'][:, 1:], dis_out_diffuse['diffuse_P'][:, 1:]], dim=1))
-        # n_k_specular = self.R_specular(torch.cat([dis_out_specular['specular_G'][:, 1:], dis_out_specular['specular_P'][:, 1:]], dim=1))
+        elif self.interpolation == 'direct':
+            # use hidden embeddings to predict a new kernel to be applied
+            # might need a constraint that can make the new kernel not to diverge
+            n_k_diffuse = self.R_diffuse(torch.cat([dis_out_diffuse['diffuse_G'][:, 1:], dis_out_diffuse['diffuse_P'][:, 1:]], dim=1))
+            n_k_specular = self.R_specular(torch.cat([dis_out_specular['specular_G'][:, 1:], dis_out_specular['specular_P'][:, 1:]], dim=1))
+            r_diffuse = self.kernel_apply(b_diffuse, F.softmax(n_k_diffuse, dim=1).contiguous())
+            r_specular = self.kernel_apply(b_specular, F.softmax(n_k_specular, dim=1).contiguous())
 
-
-        r_diffuse = self.kernel_apply(b_diffuse, F.softmax(n_k_diffuse, dim=1).contiguous())
-        r_specular = self.kernel_apply(b_specular, F.softmax(n_k_specular, dim=1).contiguous())
 
         albedo = crop_like(data["kpcn_albedo"], r_diffuse).contiguous()
         final_specular = torch.exp(r_specular) - 1
