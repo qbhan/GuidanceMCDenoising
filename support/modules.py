@@ -110,12 +110,15 @@ class Up(nn.Module):
 
 
 class OutConv(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, activation=torch.NoneType):
         super(OutConv, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
-
+        if activation == 'sigmoid':
+            self.act = nn.Sigmoid()
+        else:
+            self.act = nn.Identity()
     def forward(self, x):
-        return self.conv(x)
+        return self.act(self.conv(x))
 
 
 class SimpleUNet(nn.Module):
@@ -166,6 +169,18 @@ class SimpleUNet(nn.Module):
         # print('up x1', x.shape)
         x = self.outc(x)
         return x, x5
+
+
+# class UNetEncoder(nn.Module):
+#     def __init__(self, n_channels, n_classes, hidden=64, bilinear=True, strided_down=False, activation="relu"):
+#         super(UNetEncoder, self).__init__()
+#         if strided_down:
+#             down = StridedDown 
+#         else:
+#             down = Down
+
+#         self.inc = DoubleConv(n_channels, hidden, activation=activation)
+        
     
     
 class RecurrentBlock(nn.Module):

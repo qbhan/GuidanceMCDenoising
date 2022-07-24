@@ -25,7 +25,7 @@ from support.networks import AdvKPCN, NewAdvKPCN_2, ModKPCN, PixelDiscriminator,
 from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
 from support.losses import RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
-from support.interfaces import AdvKPCNInterface, NewAdvKPCNInterface, NewAdvKPCNInterface1
+from support.interfaces import AdvKPCNInterface, NewAdvKPCNInterface, NewAdvKPCNInterface1, NewAdvKPCNInterface2
 from train_kpcn import validate_kpcn, train, train_epoch_kpcn
 
 # Gharbi et al. dependency
@@ -40,14 +40,18 @@ except ImportError as error:
 def init_data(args):
     # Initialize datasets
     datasets = {}
-#    datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-#        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
-#    datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-#        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
-    datasets['train'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
-    datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+    if 'full' in args.desc:
+        print('load full dataset')
+        datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
+            use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+        datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
+            use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+    else:
+        print('load 8spp dataset')
+        datasets['train'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
+             use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+        datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
+             use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
     
     # Initialize dataloaders
     dataloaders = {}
@@ -96,7 +100,17 @@ def init_model(dataset, args):
                         p_in = 10 + n_out + 1 #23
                     else:
                         p_in = 46
-                    models['dncnn'] = NewAdvKPCN_1(35, p_in, gen_activation=args.activation, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down)
+                    models['dncnn'] = NewAdvKPCN_1(35, p_in, gen_activation=args.activation, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down, interpolation=args.interpolation)
+                elif args.type == 'new_adv_2':
+                    if args.manif_learn:
+                        n_in = dataset['train'].pnet_in_size
+                        n_out = pnet_out_size
+                        models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
+                        models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
+                        p_in = 10 + n_out + 1 #23
+                    else:
+                        p_in = 46
+                    models['dncnn'] = NewAdvKPCN_2(35, p_in, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down, interpolation=args.interpolation)
                 else:
                     models['dncnn'] = AdvKPCN(n_in, pnet_out=pnet_out_size)
                     print('Initialize AdvKPCN for path descriptors (# of input channels: %d).'%(n_in))
@@ -231,6 +245,8 @@ def init_model(dataset, args):
         if not args.use_single:
             if args.type == 'new_adv_1':
                 itf = NewAdvKPCNInterface1(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
+            if args.type == 'new_adv_2':
+                itf = NewAdvKPCNInterface2(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
             else:
                 itf = AdvKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
         else:
@@ -364,6 +380,7 @@ if __name__ == "__main__":
 
     # (for NewAdvKPCN_1)
     parser.add_argument('--type', type=str, default='new_adv_2')
+    parser.add_argument('--interpolation', type=str, default='kernel')
     
     
     args = parser.parse_args()

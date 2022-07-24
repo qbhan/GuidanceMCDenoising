@@ -107,8 +107,8 @@ def train(interfaces, dataloaders, params, args):
     print('[] Experiment: `{}`'.format(args.desc))
     print('[] # of interfaces : %d'%(len(interfaces)))
     print('[] Model training start...')
-    # writer = SummaryWriter('summary_full/'+args.desc)
-    writer = SummaryWriter(args.summary)
+    writer = SummaryWriter(args.summary + args.desc)
+    # writer = SummaryWriter(args.summary)
     # Start training
     for epoch in range(args.start_epoch, args.num_epoch):
         if len(interfaces) == 1:
@@ -186,18 +186,18 @@ Main Utils
 def init_data(args):
     # Initialize datasets
     datasets = {}
-    datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
-    datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
-#    datasets['train'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-#         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, no_pmodel=args.no_p_model)
-#    datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-#         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, no_pmodel=args.no_p_model)
-    # datasets['train'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-    #     use_g_buf=False, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
-    # datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-    #     use_g_buf=False, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
+    if 'full' in args.desc:
+        print('load full dataset')
+        datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
+            use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+        datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
+            use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+    else:
+        print('load 8spp dataset')
+        datasets['train'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
+             use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+        datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
+             use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
     
     # Initialize dataloaders
     dataloaders = {}
