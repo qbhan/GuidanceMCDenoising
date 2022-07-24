@@ -1,0 +1,22 @@
+python train_adv.py \
+    --single_gpu \
+    --batch_size 8 \
+    --val_epoch 1 \
+    --data_dir /mnt/ssd2/kbhan/KPCN \
+    --model_name KPCN_new_adv_2_wadv_0.01 \
+    --desc "KPCN_new_adv_2_wadv_0.01" \
+    --num_epoch 20 \
+    --lr_dncnn 1e-4 \
+    --use_llpm_buf \
+    --manif_learn \
+    --manif_loss FMSE \
+    --w_manif 0.1 \
+    --pnet_out_size 12 \
+    --use_adv \
+    --w_adv 0.01 \
+    --start_epoch 0 \
+    --device_id 3 \
+    --type 'new_adv_2' \
+    --save 'weights_8' \
+    --summary 'summary_8' \
+    --interpolation 'kernel'
