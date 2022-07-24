@@ -69,7 +69,7 @@ def inference(interface, dataloader, spp, args):
         }
     if args.vis_score:
         out_score_dict = {
-            's_diffuse': torch.zeros((1, H, W)).cuda(), 's_diffuse': torch.zeros((1, H, W)).cuda(),
+            's_diffuse': torch.zeros((1, H, W)).cuda(), 's_specular': torch.zeros((1, H, W)).cuda(),
             's_g_diffuse': torch.zeros((1, H, W)).cuda(), 's_p_diffuse': torch.zeros((1, H, W)).cuda(),
             's_g_specular': torch.zeros((1, H, W)).cuda(), 's_p_specular': torch.zeros((1, H, W)).cuda(),
             'weight_diffuse': torch.zeros((1, H, W)).cuda(), 'weight_specular': torch.zeros((1, H, W)).cuda(),
@@ -154,12 +154,12 @@ def inference(interface, dataloader, spp, args):
     out_rad = out_rad.detach().cpu().numpy().transpose([1, 2, 0])
     for k in input_dict:
         if 'specular' in k:
-            input_dict[k] = torch.exp(input_dict[k] - 1.0)
+            input_dict[k] = torch.exp(input_dict[k]) - 1.0
         input_dict[k] = input_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
     if args.vis_branch:
         for k in out_rad_dict:
             if 'specular' in k:
-                out_rad_dict[k] = torch.exp(out_rad_dict[k] - 1.0)
+                out_rad_dict[k] = torch.exp(out_rad_dict[k]) - 1.0
             out_rad_dict[k] = out_rad_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
     if args.kernel_visualize:
         for k in out_kernel_dict:
@@ -307,13 +307,15 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
             out_rad = out_rad[crop:-crop, crop:-crop, ...]
             for k in input_dict:
                 input_dict[k] = input_dict[k][crop:-crop, crop:-crop, ...]
-            for k in out_rad_dict:
-                out_rad_dict[k] = out_rad_dict[k][crop:-crop, crop:-crop, ...]
+            if out_rad_dict:
+                for k in out_rad_dict:
+                    out_rad_dict[k] = out_rad_dict[k][crop:-crop, crop:-crop, ...]
             if args.kernel_visualize:
                 for k in out_kernel_dict:
                     out_kernel_dict[k] = out_kernel_dict[k][crop:-crop, crop:-crop, ...]
-            for k in out_score_dict:
-                out_score_dict[k] = out_score_dict[k][crop:-crop, crop:-crop, ...]
+            if out_score_dict:
+                for k in out_score_dict:
+                    out_score_dict[k] = out_score_dict[k][crop:-crop, crop:-crop, ...]
             if out_path is not None:
                 if type(out_path) == dict:
                     for key in out_path:
@@ -326,9 +328,10 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
             # Process the background and emittors which do not require to be denoised
             has_hit = dataset.has_hit[crop:-crop, crop:-crop, ...]
             out_rad = np.where(has_hit == 0, ipt, out_rad)
-            for k in out_rad_dict:
-                if k == 'g_radiance':
-                    out_rad_dict[k] = np.where(has_hit == 0, ipt, out_rad_dict[k])
+            if out_rad_dict:
+                for k in out_rad_dict:
+                    if k == 'g_radiance':
+                        out_rad_dict[k] = np.where(has_hit == 0, ipt, out_rad_dict[k])
             """
             Statistics
             """
@@ -407,23 +410,24 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
 
 
             if args.vis_branch:
+                os.makedirs(os.path.join(output_dir, scene, str(spp)), exist_ok=True)
                 for k in input_dict:
                     kk = tmaps[-1](input_dict[k])
-                    plt.imsave(os.path.join(output_dir, scene, '{}_{}_{}.png'.format(spp, args.model_name,k)), kk)
+                    plt.imsave(os.path.join(output_dir, scene, str(spp), '{}_{}_{}.png'.format(spp, args.model_name,k)), kk)
                 for k in out_rad_dict:
                     kk = tmaps[-1](out_rad_dict[k])
-                    plt.imsave(os.path.join(output_dir, scene, '{}_{}_{}.png'.format(spp, args.model_name,k)), kk)
+                    plt.imsave(os.path.join(output_dir, scene, str(spp), '{}_{}_{}.png'.format(spp, args.model_name,k)), kk)
             if args.kernel_visualize:
                     for p in pixels:
-                        plt.imsave(os.path.join(output_dir, scene, 'crop_{}_{}_{}_{}_{}.png'.format(spp, args.model_name,k,p[0],p[1])), kk[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
+                        plt.imsave(os.path.join(output_dir, scene, str(spp), 'crop_{}_{}_{}_{}_{}.png'.format(spp, args.model_name,k,p[0],p[1])), kk[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
                     for k in out_kernel_dict:
                         for p in pixels:
                             kk = np.reshape(out_kernel_dict[k][p[0], p[1], ...], (21, 21))
-                        plt.imsave(os.path.join(output_dir, scene, 'kernel_{}_{}_{}_{}_{}.png'.format(spp, args.model_name,k,p[0],p[1])), kk, cmap='gray')
+                        plt.imsave(os.path.join(output_dir, scene, str(spp), 'kernel_{}_{}_{}_{}_{}.png'.format(spp, args.model_name,k,p[0],p[1])), kk, cmap='gray')
             if args.vis_score:
                 for k in out_score_dict:
                     # print(out_score_dict[k].shape)
-                    plt.imsave(os.path.join(output_dir, scene, '{}_{}_{}.png'.format(spp, args.model_name,k)), out_score_dict[k][..., 0], cmap='gray')
+                    plt.imsave(os.path.join(output_dir, scene, str(spp), '{}_{}_{}.png'.format(spp, args.model_name,k)), out_score_dict[k][..., 0], cmap='gray')
     # x, y = len(results), len(results[0])
     # print('size', x, y)
     # for i in range(x):
@@ -436,7 +440,7 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
 if __name__ == "__main__":
     class Args(): # just for compatibility with argparse-related functions
         output_dir = 'result_full'
-        save = '/root/WCMC/weights2/'
+        save = '/root/WCMC/weights_8/'
         model_name = 'SBMC_v2.0'
         single_gpu = True
         use_g_buf, use_sbmc_buf, use_llpm_buf = True, True, True
@@ -455,7 +459,7 @@ if __name__ == "__main__":
 
         start_epoch = 0
         single_gpu = True
-        device_id = 2
+        device_id = 0
         lr_dncnn = 1e-4
 
         visual = False
@@ -482,6 +486,7 @@ if __name__ == "__main__":
         disc_activation = 'relu'
         no_p_model = False
         type = None
+        interpolation = 'kernel'
 
         # feature analysis
         load_gbuf = True
@@ -494,11 +499,11 @@ if __name__ == "__main__":
     
     args = Args()
 
-    input_dir = '/mnt/hdd1/iycho/KPCN/test/input/'
+    input_dir = '/mnt/ssd1/kbhan/KPCN/test/input/'
     # full scene
-    # scenes = ['bathroom', 'bathroom_v2', 'bathroom_v3', 'bathroom-3', 'bathroom-3_v2', 'bathroom-3_v3', 'car', 'car_v2', 'car_v3', 'car2', 'car2_v3', 'chair-room', 'chair-room_v2', 'chair', 'gharbi', 'hookah', 'hookah_v2', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'kitchen-2_v3', 'library-office', 'sitting-room-2', 'tableware']
+    scenes = ['bathroom', 'bathroom_v2', 'bathroom_v3', 'bathroom-3', 'bathroom-3_v2', 'bathroom-3_v3', 'car', 'car_v2', 'car_v3', 'car2', 'car2_v3', 'chair-room', 'chair-room_v2', 'chair', 'gharbi', 'hookah', 'hookah_v2', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'kitchen-2_v3', 'library-office', 'sitting-room-2', 'tableware']
     # scenes with 32, 64 spp
-    scenes = ['bathroom_v3', 'bathroom-3_v2', 'car', 'car_v2', 'car_v3', 'chair', 'chair-room', 'chair-room_v2', 'gharbi', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'library-office', 'sitting-room-2', 'tableware']
+    # scenes = ['bathroom-3_v2', 'car', 'car_v2', 'car_v3', 'chair', 'chair-room', 'chair-room_v2', 'gharbi', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'library-office', 'sitting-room-2', 'tableware']
     
     
     # input_dir = '/mnt/hdd1/kbhan/KPCN/test/input/'
@@ -510,23 +515,26 @@ if __name__ == "__main__":
     # spps = [32, 64]
     spps = [8]
     torch.cuda.set_device(args.device_id)
-    args.output_dir = 'result_8spp_vis'
+    args.save = '/home/kyubeom/WCMC/weights_8/'
+    args.output_dir = 'result_8spp'
 
     # KPCN
     # print('KPCN')
-    # args.model_name = 'KPCN'
+    # args.model_name = 'KPCN_vanilla'
     # args.pnet_out_size = [0]
     # args.use_llpm_buf, args.manif_learn = False, False
     # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
 
     # KPCN
     # print('KPCN_manif')
-    # args.model_name = 'KPCN_manif_p12'
-    # args.pnet_out_size = [12]
+    # args.model_name = 'KPCN_manifold_FMSE'
+    # args.pnet_out_size = [3]
     # args.use_llpm_buf, args.manif_learn = True, True
     # args.load_gbuf, args.load_pbuf = True, True
     # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
+    # scenes = ['bathroom-3_v2', 'car', 'car_v2', 'car_v3', 'chair', 'chair-room', 'chair-room_v2', 'gharbi', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'library-office', 'sitting-room-2', 'tableware']
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
 
     # KPCN
     # print('KPCN_full')
@@ -537,7 +545,7 @@ if __name__ == "__main__":
     # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
 
     # KPCN
-    # print('KPCN_manif_full')
+    # print('KPCN_manif')
     # args.model_name = 'KPCN_manif_full'
     # args.pnet_out_size = [3]
     # args.use_llpm_buf, args.manif_learn = True, True
@@ -575,13 +583,14 @@ if __name__ == "__main__":
     # KPCN_new_adv_1
     print('KPCN_new_adv_1')
     args.type = 'new_adv_1'
-    args.model_name = 'KPCN_new_adv_1_leaky_2'
+    args.model_name = 'KPCN_new_adv_1_wadv_0.01_image_2'
     args.pnet_out_size = [12]
     args.use_llpm_buf, args.manif_learn = True, True
     args.use_adv = True
-    args.disc_activation = "leaky_relu"
-    args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # args.disc_activation = "leaky_relu"
+    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    args.interpolation = 'image'
+    denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
 
     # KPCN_adv
     # print('KPCN_adv')
