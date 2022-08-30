@@ -25,6 +25,25 @@ except ImportError as error:
     print('Put appropriate paths in the configs.py file.')
     raise
 
+from support.utils import ToneMapBatch
+
+def score_map(img, tgt, error_type='L1'):
+    # with torch.no_grad():
+    #     score = torch.clip(torch.abs((ToneMapBatch(img) - ToneMapBatch(tgt))), 0.0, 1.0)
+    #     return score
+    if error_type == 'L1':
+        score = torch.abs((ToneMapBatch(img) - ToneMapBatch(tgt))).mean(dim=1)
+    elif error_type == 'MSE':
+        # print(img.shape, tgt.shape)
+        score = torch.square((ToneMapBatch(img) - ToneMapBatch(tgt))).mean(dim=1)
+        # print(score.shape)
+    score = torch.clip(score, 0.0, 1.0)
+    # score = torch.nn.
+    score = score.unsqueeze(1)
+    return score.detach()
+
+  
+
 class BaseInterface(metaclass=ABCMeta):
 
     def __init__(self, models, optims, loss_funcs, args, visual=False, use_llpm_buf=False, manif_learn=False, w_manif=0.1):
@@ -112,6 +131,7 @@ class KPCNInterface(BaseInterface):
         self.cnt = 0
         self.epoch = 0
         self.no_p_model = args.no_p_model
+        self.no_gbuf = args.no_gbuf
 
     def __str__(self):
         return 'KPCNInterface'
@@ -184,16 +204,28 @@ class KPCNInterface(BaseInterface):
             p_var_specular /= p_buffers['specular'].shape[1]
 
             # make a new batch
-            batch = {
-                'target_total': batch['target_total'],
-                'target_diffuse': batch['target_diffuse'],
-                'target_specular': batch['target_specular'],
-                'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
-                'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'], p_buffers['specular'].mean(1), p_var_specular], 1),
-                'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
-                'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
-                'kpcn_albedo': batch['kpcn_albedo'],
-            }
+            if not self.no_gbuf:
+                batch = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                    'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'], p_buffers['specular'].mean(1), p_var_specular], 1),
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+                }
+            else:
+                batch = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'][:, :10], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                    'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'][:, :10], p_buffers['specular'].mean(1), p_var_specular], 1),
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+                }
 
             # del p_buffer
         
@@ -362,16 +394,28 @@ class KPCNInterface(BaseInterface):
             p_var_specular /= p_buffers['specular'].shape[1]
 
             # make a new batch
-            batch = {
-                'target_total': batch['target_total'],
-                'target_diffuse': batch['target_diffuse'],
-                'target_specular': batch['target_specular'],
-                'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
-                'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'], p_buffers['specular'].mean(1), p_var_specular], 1),
-                'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
-                'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
-                'kpcn_albedo': batch['kpcn_albedo'],
-            }
+            if not self.no_gbuf:
+                batch = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                    'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'], p_buffers['specular'].mean(1), p_var_specular], 1),
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+                }
+            else:
+                batch = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'][:, :10], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                    'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'][:, :10], p_buffers['specular'].mean(1), p_var_specular], 1),
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+                }
         
         out = self._regress_forward(batch)
         rad_dict = {'diffuse': out['diffuse'],
@@ -757,6 +801,7 @@ class NewAdvKPCNInterface(BaseInterface):
         self.kernel_apply = ops.KernelApply(softmax=True, splat=False)
         self.separate = args.separate
         self.manif_learn = manif_learn
+       
 
     def __str__(self):
         return 'KPCNInterface'
@@ -1069,6 +1114,8 @@ class NewAdvKPCNInterface1(BaseInterface):
         # self.kernel_apply = ops.KernelApply(softmax=True, splat=False)
         self.separate = args.separate
         self.manif_learn = manif_learn
+        self.soft_label = args.soft_label
+        self.error_type = args.error_type
 
     def __str__(self):
         return 'KPCNInterface'
@@ -1097,7 +1144,7 @@ class NewAdvKPCNInterface1(BaseInterface):
             assert 'paths' in batch
 
         self.iters += 1
-    
+  
     def train_batch(self, batch, grad_hook_mode=False):
         out_manif = None
         
@@ -1227,97 +1274,124 @@ class NewAdvKPCNInterface1(BaseInterface):
         assert 'radiance' in out
         # assert 'diffuse' in out
         # assert 'specular' in out
+        # print('train_branche', self.train_branches)
+        if self.train_branches:
+            final_radiance, g_radiance, p_radiance = out['radiance'], out['g_radiance'], out['p_radiance']
+            final_diffuse, g_diffuse, p_diffuse = out['diffuse'], out['g_diffuse'], out['p_diffuse']
+            final_specular, g_specular, p_specular = out['specular'], out['g_specular'], out['p_specular']
+            gt_diff_score, gt_spec_score = out['s_diffuse'], out['s_specular']
+            g_diff_score, g_spec_score = out['s_g_diffuse'], out['s_g_specular']
+            p_diff_score, p_spec_score = out['s_p_diffuse'], out['s_p_specular']
+            loss_dict = {}
+            tgt_diffuse = crop_like(batch['target_diffuse'], final_radiance)
+            tgt_specular = crop_like(batch['target_specular'], final_radiance)
+            tgt_total = crop_like(batch['target_total'], final_radiance)
+            
+            L_diff = self.loss_funcs['l_diffuse'](tgt_diffuse, final_diffuse)
+            loss_dict['l_diff'] = L_diff.detach()
+            L_spec = self.loss_funcs['l_specular'](tgt_specular, final_specular)
+            loss_dict['l_spec'] = L_spec.detach()
+            L_g_diff = self.loss_funcs['l_diffuse'](tgt_diffuse, g_diffuse)
+            loss_dict['l_g_diff'] = L_g_diff.detach()
+            L_g_spec = self.loss_funcs['l_specular'](tgt_specular, g_specular)
+            loss_dict['l_g_spec'] = L_g_spec.detach()
+            L_p_diff = self.loss_funcs['l_diffuse'](tgt_diffuse, p_diffuse)
+            loss_dict['l_p_diff'] = L_p_diff.detach()
+            L_p_spec = self.loss_funcs['l_specular'](tgt_specular, p_specular)
+            loss_dict['l_p_spec'] = L_p_spec.detach()
+            # L_recon_ = (L_diff + L_spec + L_g_diff + L_g_spec + L_p_diff + L_p_spec) / 6.0
+            L_recon_diff = L_diff + L_g_diff + L_p_diff
+            L_recon_spec = L_spec + L_g_spec + L_p_spec
+            L_total_diff = L_recon_diff
+            L_total_spec = L_recon_spec
+            # Loss for adversarial trainng
+            # print('adv', self.use_adv)
+            if self.use_adv:
+                if not self.soft_label:
+                    L_g_diff_adv = self.loss_funcs['l_adv'](g_diff_score, torch.cuda.FloatTensor(g_diff_score.shape).fill_(0))
+                    L_p_diff_adv = self.loss_funcs['l_adv'](p_diff_score, torch.cuda.FloatTensor(p_diff_score.shape).fill_(0))
+                    L_g_spec_adv = self.loss_funcs['l_adv'](g_spec_score, torch.cuda.FloatTensor(g_spec_score.shape).fill_(0))
+                    L_p_spec_adv = self.loss_funcs['l_adv'](p_spec_score, torch.cuda.FloatTensor(p_spec_score.shape).fill_(0))
+                    L_gt_diff_adv = self.loss_funcs['l_adv'](gt_diff_score, torch.cuda.FloatTensor(gt_diff_score.shape).fill_(1))
+                    L_gt_spec_adv = self.loss_funcs['l_adv'](gt_spec_score, torch.cuda.FloatTensor(gt_spec_score.shape).fill_(1))
+                else:
+                    with torch.no_grad():
+                        g_diff_gt = score_map(g_diffuse, tgt_diffuse, error_type=self.error_type)
+                        p_diff_gt = score_map(p_diffuse, tgt_diffuse, error_type=self.error_type)
+                        g_spec_gt = score_map(g_specular, tgt_specular, error_type=self.error_type)
+                        p_spec_gt = score_map(p_specular, tgt_specular, error_type=self.error_type)
+                    L_g_diff_adv = self.loss_funcs['l_adv'](g_diff_score, g_diff_gt)
+                    L_p_diff_adv = self.loss_funcs['l_adv'](p_diff_score, p_diff_gt)
+                    L_g_spec_adv = self.loss_funcs['l_adv'](g_spec_score, g_spec_gt)
+                    L_p_spec_adv = self.loss_funcs['l_adv'](p_spec_score, p_spec_gt)
+                    # L_gt_diff_adv = self.loss_funcs['l_adv'](gt_diff_score, torch.cuda.FloatTensor(gt_diff_score.shape).fill_(0))
+                    # L_gt_spec_adv = self.loss_funcs['l_adv'](gt_spec_score, torch.cuda.FloatTensor(gt_spec_score.shape).fill_(0))
+                loss_dict['l_g_diff_adv'] = L_g_diff_adv.detach()
+                loss_dict['l_p_diff_adv'] = L_p_diff_adv.detach()
+                # loss_dict['l_gt_diff_adv'] = L_gt_diff_adv.detach()
+                loss_dict['l_g_spec_adv'] = L_g_spec_adv.detach()
+                loss_dict['l_p_spec_adv'] = L_p_spec_adv.detach()
+                # loss_dict['l_gt_spec_adv'] = L_gt_spec_adv.detach()
+                # L_adv = (L_g_diff_adv + L_p_diff_adv + L_gt_diff_adv + L_g_spec_adv + L_p_spec_adv + L_gt_spec_adv) / 6.0# for balancing effect of noisy&gt image
+                # L_adv_diff = L_g_diff_adv + L_p_diff_adv + L_gt_diff_adv
+                # L_adv_spec = L_g_spec_adv + L_p_spec_adv + L_gt_spec_adv
+                L_adv_diff = L_g_diff_adv + L_p_diff_adv
+                L_adv_spec = L_g_spec_adv + L_p_spec_adv
+                loss_dict['l_diff_adv'] = L_adv_diff.detach()
+                loss_dict['l_spec_adv'] = L_adv_spec.detach()
+                # L_adv_diff = L_g_diff_adv + L_p_diff_adv + L_gt_diff_adv * 2.0 
+                # L_adv_spec = L_g_spec_adv + L_p_spec_adv + L_gt_spec_adv * 2.0
 
-        final_radiance, g_radiance, p_radiance = out['radiance'], out['g_radiance'], out['p_radiance']
-        final_diffuse, g_diffuse, p_diffuse = out['diffuse'], out['g_diffuse'], out['p_diffuse']
-        final_specular, g_specular, p_specular = out['specular'], out['g_specular'], out['p_specular']
-        gt_diff_score, gt_spec_score = out['s_diffuse'], out['s_specular']
-        g_diff_score, g_spec_score = out['s_g_diffuse'], out['s_g_specular']
-        p_diff_score, p_spec_score = out['s_p_diffuse'], out['s_p_specular']
-        loss_dict = {}
-        tgt_diffuse = crop_like(batch['target_diffuse'], final_radiance)
-        tgt_specular = crop_like(batch['target_specular'], final_radiance)
-        tgt_total = crop_like(batch['target_total'], final_radiance)
-        
-        L_diff = self.loss_funcs['l_diffuse'](tgt_diffuse, final_diffuse)
-        loss_dict['l_diff'] = L_diff.detach()
-        L_spec = self.loss_funcs['l_specular'](tgt_specular, final_specular)
-        loss_dict['l_spec'] = L_spec.detach()
-        L_g_diff = self.loss_funcs['l_diffuse'](tgt_diffuse, g_diffuse)
-        loss_dict['l_g_diff'] = L_g_diff.detach()
-        L_g_spec = self.loss_funcs['l_specular'](tgt_specular, g_specular)
-        loss_dict['l_g_spec'] = L_g_spec.detach()
-        L_p_diff = self.loss_funcs['l_diffuse'](tgt_diffuse, p_diffuse)
-        loss_dict['l_p_diff'] = L_p_diff.detach()
-        L_p_spec = self.loss_funcs['l_specular'](tgt_specular, p_specular)
-        loss_dict['l_p_spec'] = L_p_spec.detach()
-        # L_recon_ = (L_diff + L_spec + L_g_diff + L_g_spec + L_p_diff + L_p_spec) / 6.0
-        L_recon_diff = L_diff + L_g_diff + L_p_diff
-        L_recon_spec = L_spec + L_g_spec + L_p_spec
-        # L_recon_diff = L_diff
-        # L_recon_spec = L_spec
-        # Loss for adversarial trainng
-        L_g_diff_adv = self.loss_funcs['l_adv'](g_diff_score, torch.zeros_like(g_diff_score))
-        L_p_diff_adv = self.loss_funcs['l_adv'](p_diff_score, torch.zeros_like(p_diff_score))
-        L_g_spec_adv = self.loss_funcs['l_adv'](g_spec_score, torch.zeros_like(g_spec_score))
-        L_p_spec_adv = self.loss_funcs['l_adv'](p_spec_score, torch.zeros_like(p_spec_score))
-        L_gt_diff_adv = self.loss_funcs['l_adv'](gt_diff_score, torch.ones_like(gt_diff_score))
-        L_gt_spec_adv = self.loss_funcs['l_adv'](gt_spec_score, torch.ones_like(gt_spec_score))
-        loss_dict['l_g_diff_adv'] = L_g_diff_adv.detach()
-        loss_dict['l_p_diff_adv'] = L_p_diff_adv.detach()
-        loss_dict['l_gt_diff_adv'] = L_gt_diff_adv.detach()
-        loss_dict['l_g_spec_adv'] = L_g_spec_adv.detach()
-        loss_dict['l_p_spec_adv'] = L_p_spec_adv.detach()
-        loss_dict['l_gt_spec_adv'] = L_gt_spec_adv.detach()
-        # L_adv = (L_g_diff_adv + L_p_diff_adv + L_gt_diff_adv + L_g_spec_adv + L_p_spec_adv + L_gt_spec_adv) / 6.0# for balancing effect of noisy&gt image
-        L_adv_diff = L_g_diff_adv + L_p_diff_adv + L_gt_diff_adv
-        L_adv_spec = L_g_spec_adv + L_p_spec_adv + L_gt_spec_adv
-        # L_adv_diff = L_g_diff_adv + L_p_diff_adv + L_gt_diff_adv * 2.0 
-        # L_adv_spec = L_g_spec_adv + L_p_spec_adv + L_gt_spec_adv * 2.0
+                L_total_diff += L_adv_diff * self.w_adv
+                L_total_spec += L_adv_spec * self.w_adv
 
-        L_total_diff = L_recon_diff + L_adv_diff * self.w_adv
-        L_total_spec = L_recon_spec + L_adv_spec * self.w_adv
+            if self.manif_learn:
+                p_buffer_diffuse = crop_like(p_buffers['diffuse'], g_diffuse)
+                L_manif_diffuse = self.loss_funcs['l_manif'](p_buffer_diffuse, tgt_diffuse)
 
-        if self.manif_learn:
-            p_buffer_diffuse = crop_like(p_buffers['diffuse'], g_diffuse)
-            L_manif_diffuse = self.loss_funcs['l_manif'](p_buffer_diffuse, tgt_diffuse)
+                p_buffer_specular = crop_like(p_buffers['specular'], g_specular)
+                L_manif_specular = self.loss_funcs['l_manif'](p_buffer_specular, tgt_specular)
 
-            p_buffer_specular = crop_like(p_buffers['specular'], g_specular)
-            L_manif_specular = self.loss_funcs['l_manif'](p_buffer_specular, tgt_specular)
+                loss_dict['l_manif_diffuse'] = L_manif_diffuse.detach()
+                loss_dict['l_manif_specular'] = L_manif_specular.detach()
 
-            loss_dict['l_manif_diffuse'] = L_manif_diffuse.detach()
-            loss_dict['l_manif_specular'] = L_manif_specular.detach()
+                L_total_diff += L_manif_diffuse * self.w_manif
+                L_total_spec += L_manif_specular * self.w_manif
 
-            L_total_diff += L_manif_diffuse * self.w_manif
-            L_total_spec += L_manif_specular * self.w_manif
+                del p_buffer_diffuse, p_buffer_specular
 
-            del p_buffer_diffuse, p_buffer_specular
+            L_total_diff.backward()
+            L_total_spec.backward()
+            
+            # Loss for final denoising
+            L_final = self.loss_funcs['l_recon'](tgt_total, final_radiance)
+            loss_dict['l_final'] = L_final.detach()
 
-        L_total_diff.backward()
-        L_total_spec.backward()
-        
-        # Loss for final denoising
-        L_final = self.loss_funcs['l_recon'](tgt_total, final_radiance)
-        loss_dict['l_final'] = L_final.detach()
+            with torch.no_grad():
+                L_total = self.loss_funcs['l_recon'](tgt_total, final_radiance)
+                loss_dict['l_total'] = L_total.detach()
 
-        with torch.no_grad():
-            L_total = self.loss_funcs['l_recon'](tgt_total, final_radiance)
+            del g_radiance, p_radiance
+            del final_diffuse, g_diffuse, p_diffuse
+            del final_specular, g_specular, p_specular
+            del gt_diff_score, gt_spec_score
+            del g_diff_score, g_spec_score
+            del p_diff_score, p_spec_score
+            del tgt_diffuse, tgt_specular
+
+        else:
+            loss_dict = {}
+            final_radiance = out['radiance']
+            tgt_total = crop_like(batch['target_total'], out['radiance'])
+            L_total = self.loss_funcs['l_recon'](out['radiance'], tgt_total)
             loss_dict['l_total'] = L_total.detach()
-        # L_total = self.loss_funcs['l_recon'](total, tgt_total)
-        # loss_dict['l_total'] = L_total.detach()
-        # L_total.backward()
+            L_total.backward()
+
+            
         
         with torch.no_grad():
             loss_dict['rmse'] = self.loss_funcs['l_test'](final_radiance, tgt_total).detach()
         self.cnt += 1
-
-        del final_radiance, g_radiance, p_radiance
-        del final_diffuse, g_diffuse, p_diffuse
-        del final_specular, g_specular, p_specular
-        del gt_diff_score, gt_spec_score
-        del g_diff_score, g_spec_score
-        del p_diff_score, p_spec_score
-        del tgt_diffuse, tgt_specular, tgt_total
 
         return loss_dict
 
@@ -1395,6 +1469,21 @@ class NewAdvKPCNInterface1(BaseInterface):
                 'kpcn_albedo': batch['kpcn_albedo'],
                 'paths_diffuse': torch.cat([p_buffers['diffuse'].mean(1), p_var_diffuse], dim=1),
                 'paths_specular': torch.cat([p_buffers['specular'].mean(1), p_var_specular], dim=1),
+            }
+        else:
+            p_var = batch['paths'].var(1).mean(1, keepdims=True).detach()
+            p_var /= batch['paths'].shape[1] # spp
+            batch = {
+                'target_total': batch['target_total'],
+                'target_diffuse': batch['target_diffuse'],
+                'target_specular': batch['target_specular'],
+                'kpcn_diffuse_in': batch['kpcn_diffuse_in'],
+                'kpcn_specular_in': batch['kpcn_specular_in'],
+                'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                'kpcn_albedo': batch['kpcn_albedo'],
+                'paths_diffuse': torch.cat([batch['paths'].mean(1), p_var], dim=1),
+                'paths_specular': torch.cat([batch['paths'].mean(1), p_var], dim=1),
             }
 
         out = self._regress_forward(batch, vis, self.separate)
@@ -1644,26 +1733,32 @@ class NewAdvKPCNInterface2(BaseInterface):
         # L_recon_diff = L_diff
         # L_recon_spec = L_spec
         # Loss for adversarial trainng
-        L_g_diff_adv = self.loss_funcs['l_adv'](g_diff_score, torch.zeros_like(g_diff_score))
-        L_p_diff_adv = self.loss_funcs['l_adv'](p_diff_score, torch.zeros_like(p_diff_score))
-        L_g_spec_adv = self.loss_funcs['l_adv'](g_spec_score, torch.zeros_like(g_spec_score))
-        L_p_spec_adv = self.loss_funcs['l_adv'](p_spec_score, torch.zeros_like(p_spec_score))
-        L_gt_diff_adv = self.loss_funcs['l_adv'](gt_diff_score, torch.ones_like(gt_diff_score))
-        L_gt_spec_adv = self.loss_funcs['l_adv'](gt_spec_score, torch.ones_like(gt_spec_score))
-        loss_dict['l_g_diff_adv'] = L_g_diff_adv.detach()
-        loss_dict['l_p_diff_adv'] = L_p_diff_adv.detach()
-        loss_dict['l_gt_diff_adv'] = L_gt_diff_adv.detach()
-        loss_dict['l_g_spec_adv'] = L_g_spec_adv.detach()
-        loss_dict['l_p_spec_adv'] = L_p_spec_adv.detach()
-        loss_dict['l_gt_spec_adv'] = L_gt_spec_adv.detach()
-        # L_adv = (L_g_diff_adv + L_p_diff_adv + L_gt_diff_adv + L_g_spec_adv + L_p_spec_adv + L_gt_spec_adv) / 6.0# for balancing effect of noisy&gt image
-        L_adv_diff = L_g_diff_adv + L_p_diff_adv + L_gt_diff_adv
-        L_adv_spec = L_g_spec_adv + L_p_spec_adv + L_gt_spec_adv
-        # L_adv_diff = L_g_diff_adv + L_p_diff_adv + L_gt_diff_adv * 2.0 
-        # L_adv_spec = L_g_spec_adv + L_p_spec_adv + L_gt_spec_adv * 2.0
+        L_total_diff, L_total_spec = L_recon_diff, L_recon_spec
 
-        L_total_diff = L_recon_diff + L_adv_diff * self.w_adv
-        L_total_spec = L_recon_spec + L_adv_spec * self.w_adv
+        # print(self.use_adv)
+        if self.use_adv:
+            L_g_diff_adv = self.loss_funcs['l_adv'](g_diff_score, torch.zeros_like(g_diff_score))
+            L_p_diff_adv = self.loss_funcs['l_adv'](p_diff_score, torch.zeros_like(p_diff_score))
+            L_g_spec_adv = self.loss_funcs['l_adv'](g_spec_score, torch.zeros_like(g_spec_score))
+            L_p_spec_adv = self.loss_funcs['l_adv'](p_spec_score, torch.zeros_like(p_spec_score))
+            L_gt_diff_adv = self.loss_funcs['l_adv'](gt_diff_score, torch.ones_like(gt_diff_score))
+            L_gt_spec_adv = self.loss_funcs['l_adv'](gt_spec_score, torch.ones_like(gt_spec_score))
+            loss_dict['l_g_diff_adv'] = L_g_diff_adv.detach()
+            loss_dict['l_p_diff_adv'] = L_p_diff_adv.detach()
+            loss_dict['l_gt_diff_adv'] = L_gt_diff_adv.detach()
+            loss_dict['l_g_spec_adv'] = L_g_spec_adv.detach()
+            loss_dict['l_p_spec_adv'] = L_p_spec_adv.detach()
+            loss_dict['l_gt_spec_adv'] = L_gt_spec_adv.detach()
+            # L_adv = (L_g_diff_adv + L_p_diff_adv + L_gt_diff_adv + L_g_spec_adv + L_p_spec_adv + L_gt_spec_adv) / 6.0# for balancing effect of noisy&gt image
+            L_adv_diff = L_g_diff_adv + L_p_diff_adv + L_gt_diff_adv
+            L_adv_spec = L_g_spec_adv + L_p_spec_adv + L_gt_spec_adv
+            # L_adv_diff = L_g_diff_adv + L_p_diff_adv + L_gt_diff_adv * 2.0 
+            # L_adv_spec = L_g_spec_adv + L_p_spec_adv + L_gt_spec_adv * 2.0
+
+            # L_total_diff = L_recon_diff + L_adv_diff * self.w_adv
+            # L_total_spec = L_recon_spec + L_adv_spec * self.w_adv
+            L_total_diff += L_adv_diff * self.w_adv
+            L_total_spec += L_adv_spec * self.w_adv
 
         if self.manif_learn:
             p_buffer_diffuse = crop_like(p_buffers['diffuse'], g_diffuse)
@@ -1782,6 +1877,19 @@ class NewAdvKPCNInterface2(BaseInterface):
                 'kpcn_albedo': batch['kpcn_albedo'],
                 'paths_diffuse': torch.cat([p_buffers['diffuse'].mean(1), p_var_diffuse], dim=1),
                 'paths_specular': torch.cat([p_buffers['specular'].mean(1), p_var_specular], dim=1),
+            }
+        else:
+            batch = {
+                'target_total': batch['target_total'],
+                'target_diffuse': batch['target_diffuse'],
+                'target_specular': batch['target_specular'],
+                'kpcn_diffuse_in': batch['kpcn_diffuse_in'],
+                'kpcn_specular_in': batch['kpcn_specular_in'],
+                'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                'kpcn_albedo': batch['kpcn_albedo'],
+                'paths_diffuse': torch.cat([batch['paths'].mean(1), p_var], dim=1),
+                'paths_specular': torch.cat([batch['paths'].mean(1), p_var], dim=1),
             }
 
         out = self._regress_forward(batch, mode='test')

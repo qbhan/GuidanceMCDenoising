@@ -12,7 +12,7 @@ from tqdm import tqdm
 from support.utils import ToneMap, LinearToSrgb
 
 
-random.seed('Inyoung Cho')
+# random.seed('Inyoung Cho')
 
 def gradient_importance_map(img):
     if len(img.shape) == 3 and img.shape[2] == 3:
@@ -159,7 +159,7 @@ class DenoiseDataset(Dataset):
             albedo_r, albedo_g, albedo_b,
     """
 
-    def __init__(self, gt_base_dir, spp, base_model='sbmc', mode='train', batch_size=8, sampling='random', use_g_buf=True, use_sbmc_buf=True, use_llpm_buf=False, pnet_out_size=3, use_single=False, no_pmodel=False):
+    def __init__(self, gt_base_dir, spp, base_model='sbmc', mode='train', batch_size=8, sampling='random', use_g_buf=True, use_sbmc_buf=True, use_llpm_buf=False, pnet_out_size=3, use_single=False, no_pmodel=False, rank=0):
         if base_model not in [self.SBMC, self.KPCN, self.LBMC]:
             raise RuntimeError("Unknown baseline model %s" % base_model)
         
@@ -281,7 +281,7 @@ class DenoiseDataset(Dataset):
         }
 
         # Set random seeds
-        random.seed("Inyoung Cho, Yuchi Huo, Sungeui Yoon @ KAIST")
+        # random.seed("Inyoung Cho, Yuchi Huo, Sungeui Yoon @ KAIST")
         random.shuffle(self.gt_files)
 
         # Constants for patch importance sampling
@@ -292,6 +292,7 @@ class DenoiseDataset(Dataset):
         else:
             raise RuntimeError("Unknown training mode %s" % mode)
         self.samples = None
+        self.rank = rank
     
     def __len__(self):
         return len(self.gt_files) * self.patches_per_image
@@ -857,7 +858,7 @@ class DenoiseDataset(Dataset):
         """Return all grid patches
         """
         self.samples = []
-        if self.base_model == 'sbmc':
+        if self.base_model == 'sbmc' or self.base_model == 'afgsa':
             h, w, _, = sample['target_image'].shape
         elif self.base_model == 'kpcn':
             h, w, _, = sample['target_diffuse'].shape
@@ -1049,13 +1050,13 @@ class DenoiseDataset(Dataset):
         """
         img_idx = idx // self.patches_per_image
         pat_idx = idx % self.patches_per_image
-
-        if (pat_idx == 0):
+        # print(idx)
+        if (pat_idx == self.rank):
             sample = {}
             
             # Input processing
             in_fn = self.gt_files[img_idx].replace(os.sep + 'gt' + os.sep, os.sep + 'input' + os.sep)
-            
+            # print(in_fn)
             if (self.base_model == self.SBMC):
                 sbmc_s_fn = in_fn[:in_fn.rfind('.')] + '_sbmc_s' + in_fn[in_fn.rfind('.'):]
                 sbmc_p_fn = in_fn[:in_fn.rfind('.')] + '_sbmc_p' + in_fn[in_fn.rfind('.'):]
@@ -1190,7 +1191,7 @@ class MSDenoiseDataset(ConcatDataset):
 
     def __init__(self, dir, spp, base_model='sbmc', mode='train', batch_size=8,
                  sampling='random', use_g_buf=True, use_sbmc_buf=True, 
-                 use_llpm_buf=False, pnet_out_size=3, use_single=False, no_pmodel=False):
+                 use_llpm_buf=False, pnet_out_size=3, use_single=False, no_pmodel=False, rank=0):
         if spp < 2:
             raise RuntimeError("spp too low to randomize sample count, should"
                                "be at least 2.")
@@ -1199,7 +1200,7 @@ class MSDenoiseDataset(ConcatDataset):
             datasets.append(
                 DenoiseDataset(dir, _s, base_model, mode, batch_size,
                                sampling, use_g_buf, use_sbmc_buf, use_llpm_buf, pnet_out_size,
-                               use_single, no_pmodel)
+                               use_single, no_pmodel, rank)
             )
         super(MSDenoiseDataset, self).__init__(datasets)
 

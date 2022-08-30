@@ -3,26 +3,21 @@ python train_adv.py \
     --batch_size 8 \
     --val_epoch 1 \
     --data_dir /mnt/ssd2/kbhan/KPCN \
-    --model_name KPCN_new_adv_1_wadv_0.05_soft_L1_nogt_image_softmax_full \
-    --desc "KPCN_new_adv_1_wadv_0.05_soft_L1_nogt_image_softmax_full" \
-    --num_epoch 10 \
-    --lr_dncnn 1e-4 \
+    --model_name KPCN_new_adv_1_noadv_image_full_2 \
+    --desc "KPCN_new_adv_1_noadv_image_full_2" \
+    --num_epoch 20 \
+    --lr_dncnn 1e-6 \
     --use_llpm_buf \
-    --lr_pnet 1e-4 \
     --manif_learn \
     --manif_loss FMSE \
+    --lr_pnet 1e-6 \
     --w_manif 0.1 \
     --pnet_out_size 12 \
-    --use_adv \
-    --w_adv 0.05 \
-    --device_id 3 \
-    --soft_label \
-    --error_type 'L1' \
+    --device_id 0 \
     --type 'new_adv_1' \
-    --weight "softmax" \
     --disc_activation 'leaky_relu' \
     --save 'weights_full_2' \
     --summary 'summary_full_2' \
     --interpolation 'image' \
-    --train_branches
-    
+    --start_epoch 5 \
+    --best_err 1.737e-3

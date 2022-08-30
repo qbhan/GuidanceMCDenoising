@@ -1,0 +1,23 @@
+torchrun train_adv.py \
+    --batch_size 8 \
+    --val_epoch 1 \
+    --data_dir /mnt/ssd2/kbhan/KPCN \
+    --model_name KPCN_new_adv_1_wadv_0.005_soft_image_full \
+    --desc "KPCN_new_adv_1_wadv_0.005_soft_image_full" \
+    --num_epoch 20 \
+    --lr_dncnn 1e-4 \
+    --use_llpm_buf \
+    --manif_learn \
+    --manif_loss FMSE \
+    --w_manif 0.1 \
+    --pnet_out_size 12 \
+    --use_adv \
+    --w_adv 0.005 \
+    --soft_label \
+    --type 'new_adv_1' \
+    --disc_activation 'leaky_relu' \
+    --save 'weights_full_ddp' \
+    --summary 'summary_full_ddp' \
+    --interpolation 'image' \
+    --train_branches \
+    --distributed

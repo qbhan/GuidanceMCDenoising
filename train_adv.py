@@ -21,7 +21,7 @@ from tensorboardX import SummaryWriter
 import configs
 from support.networks import PathNet
 # our strategy
-from support.networks import AdvKPCN, NewAdvKPCN_2, ModKPCN, PixelDiscriminator, NewAdvKPCN_1
+from support.networks import AdvKPCN, NewAdvKPCN_2, PixelDiscriminator, NewAdvKPCN_1
 from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
 from support.losses import RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
@@ -30,11 +30,41 @@ from train_kpcn import validate_kpcn, train, train_epoch_kpcn
 
 # Gharbi et al. dependency
 sys.path.insert(1, configs.PATH_SBMC)
-try:
-    from sbmc import KPCN
-except ImportError as error:
-    print('Put appropriate paths in the configs.py file.')
-    raise
+# try:
+#     from sbmc import KPCN
+# except ImportError as error:
+#     print('Put appropriate paths in the configs.py file.')
+#     raise
+
+# for multi_gpu and amp support from KISTI
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.nn import DataParallel as DP
+from torch.utils.data.distributed import DistributedSampler
+import torch.multiprocessing as mp
+import torch.distributed as dist
+# import logging
+from tensorboardX import SummaryWriter
+from train_kpcn import logging, logging_training
+
+BS_VAL = 4
+# def setup_logger():
+#     # create logger
+#     logger = logging.getLogger(__package__)
+#     # logger.setLevel(logging.DEBUG)
+#     logger.setLevel(logging.INFO)
+
+#     # create console handler and set level to debug
+#     ch = logging.StreamHandler()
+#     ch.setLevel(logging.DEBUG)
+
+#     # create formatter
+#     formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+
+#     # add formatter to ch
+#     ch.setFormatter(formatter)
+
+#     # add ch to logger
+#     logger.addHandler(ch)
 
 
 def init_data(args):
@@ -52,25 +82,37 @@ def init_data(args):
              use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
         datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
              use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+
+    if args.distributed:
+        train_sampler = DistributedSampler(datasets['train'], shuffle=False)
+        val_sampler = DistributedSampler(datasets['val'], shuffle=False)
+    else:
+        train_sampler = None
+        val_sampler = None
     
     # Initialize dataloaders
     dataloaders = {}
+    if args.distributed: num_workers = 1# torch.cuda.device_count()
+    else: num_workers = 1
     dataloaders['train'] = DataLoader(
         datasets['train'], 
         batch_size=args.batch_size,
-        num_workers=1,
-        pin_memory=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        sampler=train_sampler
     )
     dataloaders['val'] = DataLoader(
         datasets['val'],
         batch_size=BS_VAL,
-        num_workers=1,
-        pin_memory=False
+        num_workers=num_workers,
+        pin_memory=True,
+        sampler=val_sampler
     )
     return datasets, dataloaders
 
 
-def init_model(dataset, args):
+def init_model(dataset, args, rank=0):
+    print('rank in init_model', rank)
     interfaces = []
 
     lr_pnets = args.lr_pnet
@@ -81,6 +123,10 @@ def init_model(dataset, args):
     for lr_pnet, pnet_out_size, w_manif in list(itertools.product(*tmp)):
         # Initialize models (NOTE: modified for each model) 
         models = {}
+        if args.train_branches:
+            print('Train diffuse and specular branches indenpendently.')
+        else:
+            print('Post-train two branches of KPCN.')
             
         if args.use_llpm_buf:
             if args.disentangle in ['m10r01', 'm11r01']:
@@ -89,8 +135,8 @@ def init_model(dataset, args):
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size
             print('adv', n_in, pnet_out_size)
             if not args.use_single:
-                print(args.type)
-                print(args.type == 'new_adv_1')
+                print('adv type', args.type)
+                # print(args.type == 'new_adv_1')
                 if args.type == 'new_adv_1':
                     if args.manif_learn:
                         n_in = dataset['train'].pnet_in_size
@@ -100,7 +146,7 @@ def init_model(dataset, args):
                         p_in = 10 + n_out + 1 #23
                     else:
                         p_in = 46
-                    models['dncnn'] = NewAdvKPCN_1(35, p_in, gen_activation=args.activation, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down, interpolation=args.interpolation)
+                    models['dncnn'] = NewAdvKPCN_1(35, p_in, gen_activation=args.activation, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down, interpolation=args.interpolation, revise=args.revise, weight=args.weight)
                 elif args.type == 'new_adv_2':
                     if args.manif_learn:
                         n_in = dataset['train'].pnet_in_size
@@ -109,7 +155,7 @@ def init_model(dataset, args):
                         models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
                         p_in = 10 + n_out + 1 #23
                     else:
-                        p_in = 46
+                        p_in = 47
                     models['dncnn'] = NewAdvKPCN_2(35, p_in, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down, interpolation=args.interpolation)
                 else:
                     models['dncnn'] = AdvKPCN(n_in, pnet_out=pnet_out_size)
@@ -149,7 +195,6 @@ def init_model(dataset, args):
             model_fn = os.path.join(args.save, '%s_lp%f_pos%d_wgt%f.pth'%(args.model_name, lr_pnet, pnet_out_size, w_manif))
         assert args.start_epoch != 0 or not os.path.isfile(model_fn), 'Model %s already exists.'%(model_fn)
         is_pretrained = (args.start_epoch != 0) and os.path.isfile(model_fn)
-
         if is_pretrained:
             ck = torch.load(model_fn, map_location='cuda:{}'.format(args.device_id))
             for model_name in models:
@@ -173,8 +218,20 @@ def init_model(dataset, args):
                 # models[model_name] = models[model_name].cuda(args.device_id)
                 models[model_name] = models[model_name].cuda()
         else:
+            # multi_gpu support with DDP
             print('Data Parallel')
-            if torch.cuda.device_count() == 1:
+            if args.distributed:
+                if args.world_size == 1:
+                    print('Single CUDA machine detected')
+                    for model_name in models:
+                        models[model_name] = models[model_name].cuda(args.device_id)
+                elif args.world_size > 1:
+                    print('Data parallel & Distributed')
+                    print('%d CUDA machines detected' % (torch.cuda.device_count()))
+                    for model_name in models:
+                        models[model_name].cuda()
+                        models[model_name] == DDP(models[model_name], device_ids=[rank], output_device=rank, find_unused_parameters=False)
+            elif torch.cuda.device_count() == 1:
                 print('Single CUDA machine detected')
                 for model_name in models:
                     models[model_name] = models[model_name].cuda()
@@ -220,17 +277,31 @@ def init_model(dataset, args):
                 state['param_groups'][0]['lr'] = lr
             else:
                 print('Use the checkpoint (%s) learning rate for %s.'%(model_fn, model_name))
-
             optims['optim_' + model_name].load_state_dict(state)
 
+            # to remove error https://github.com/pytorch/pytorch/issues/80809
+            optims['optim_' + model_name].param_groups[0]['capturable'] = True
+
         # Initialize losses (NOTE: modified for each model)
-        loss_funcs = {
-            'l_diffuse': nn.L1Loss(),
-            'l_specular': nn.L1Loss(),
-            'l_recon': nn.L1Loss(),
-            'l_test': RelativeMSE(),
-            'l_adv': nn.BCELoss(),
-        }
+        if not args.soft_label:
+            loss_funcs = {
+                'l_diffuse': nn.L1Loss(),
+                'l_specular': nn.L1Loss(),
+                'l_recon': nn.L1Loss(),
+                'l_test': RelativeMSE(),
+                'l_adv': nn.BCELoss(),
+            }
+        else:
+            if args.error_type == 'L1': l_adv = nn.L1Loss()
+            elif args.error_type == 'MSE': l_adv = nn.MSELoss()
+            else: l_adv = nn.L1Loss()
+            loss_funcs = {
+                'l_diffuse': nn.L1Loss(),
+                'l_specular': nn.L1Loss(),
+                'l_recon': nn.L1Loss(),
+                'l_test': RelativeMSE(),
+                'l_adv': l_adv
+            }
         if args.manif_learn:
             if args.manif_loss == 'FMSE':
                 loss_funcs['l_manif'] = FeatureMSE(non_local = not args.local)
@@ -241,13 +312,19 @@ def init_model(dataset, args):
         else:
             print('Manifold loss: None (i.e., ablation study)')
 
+        # multi_gpu for loss functions
+        for loss_name in loss_funcs:
+            loss_funcs[loss_name].cuda()
+
         # Initialize a training interface (NOTE: modified for each model)
+        # print('interface', args.use_single, args.type=='new_adv_1')
         if not args.use_single:
-            if args.type == 'new_adv_1':
-                itf = NewAdvKPCNInterface1(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
-            if args.type == 'new_adv_2':
-                itf = NewAdvKPCNInterface2(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
+            if args.type=='new_adv_1':
+                itf = NewAdvKPCNInterface1(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, train_branches=args.train_branches, use_adv=args.use_adv)
+            elif args.type == 'new_adv_2':
+                itf = NewAdvKPCNInterface2(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, train_branches=args.train_branches, use_adv=args.use_adv)
             else:
+                print('why?')
                 itf = AdvKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
         else:
             if args.type == 'new_adv_1':
@@ -276,6 +353,149 @@ def init_model(dataset, args):
     return interfaces, params
 
 
+def ddp_train(rank, args):
+    # set up multi-processing
+    torch.distributed.init_process_group("gloo", rank=rank, world_size=4) # world_size: numboer of processes
+    # logger = logging.getLogger(__package__)
+    # setup_logger()
+    torch.cuda.set_device(rank)
+    dataset, dataloaders = init_data(args)
+    interfaces, params = init_model(dataset, args, rank)
+    assert len(interfaces) > 1 or len(params) > 1
+
+    ##### important!!!
+    # make sure different processes sample different patches
+    # np.random.seed((rank + 1) * 777)
+    # random.seed((rank+1) * 777)
+    # make sure different processes have different perturbations
+    # torch.manual_seed((rank + 1) * 777)
+
+    # only main process should log
+    if rank == 0:
+        writer = SummaryWriter(os.path.join(args.summary, args.desc))
+    
+    for epoch in range(args.start_epoch, args.num_epoch):
+        if len(interfaces) == 1:
+            save_fn = args.model_name + '.pth'
+        else:
+            raise NotImplementedError('Multiple interfaces')
+
+        start_time = time.time()
+
+        # train
+        for itf in interfaces:
+            itf.to_train_mode()
+        for i, batch in enumerate(dataloaders['train']):
+            # Transfer data from the cpu to gpu memory
+            for k in batch:
+                if not batch[k].__class__ == torch.Tensor:
+                    continue
+                batch[k] = batch[k].cuda()
+
+
+            # Main
+            for itf in interfaces:
+                itf.preprocess(batch, args.use_single)
+                itf.train_batch(batch)
+        
+        summaries = []
+        if not args.visual:
+            for itf in interfaces:
+                summaries.append(itf.get_epoch_summary(mode='train', norm=len(dataloaders['train'])))
+
+        itf.epoch += 1
+        itf.cnt = 0
+        
+        # only main process should log
+        if rank == 0:
+            logging_training(writer, epoch, 0, 1, summaries)
+            print('[][] Elapsed time for one epoch: %d'%(time.time() - start_time))
+
+
+        # save best model only on the main process
+        if rank == 0:
+            for i, itf in enumerate(interfaces):
+                tmp_params = params.copy()
+                tmp_params['vis'] = None
+
+                state_dict = {
+                    'description': args.desc, #
+                    'start_epoch': epoch + 1,
+                    'model': str(itf.models['dncnn']),
+                    'params': tmp_params,
+                    'optims': itf.optims,
+                    'args': args,
+                    'best_err': itf.best_err
+                }
+
+                for model_name in itf.models:
+                    state_dict['state_dict_' + model_name] = itf.models[model_name].state_dict()
+
+                if not args.not_save:
+                    torch.save(state_dict, os.path.join(args.save, 'latest_' + save_fn))
+
+        # validate
+        if (epoch % args.val_epoch == args.val_epoch - 1):
+            if rank == 0:
+                print('[][] Validation')
+            # summaries = validate_kpcn(epoch, interfaces, dataloaders, params, 0, args)
+            print('[][] Validation (epoch %d split %d)' % (epoch, 0))
+            for itf in interfaces:
+                itf.to_eval_mode()
+
+            summaries = []
+            with torch.no_grad():
+                for batch in tqdm(dataloaders['val'], leave=False, ncols=70):
+                    # Transfer data from the cpu to gpu memory
+                    for k in batch:
+                        if not batch[k].__class__ == torch.Tensor:
+                            continue
+                        batch[k] = batch[k].cuda()
+
+                    # Main
+                    for itf in interfaces:
+                        itf.validate_batch(batch)
+
+            for itr in interfaces:
+                summaries.append(itf.get_epoch_summary(mode='eval', norm=len(dataloaders['val'])))
+
+            # save best model only on the main process
+            if rank == 0:
+                for i, itf in enumerate(interfaces):
+                    if summaries[i] < itf.best_err:
+                        itf.best_err = summaries[i]
+
+                        tmp_params = params.copy()
+                        tmp_params['vis'] = None
+
+                        state_dict = {
+                            'description': args.desc, #
+                            'start_epoch': epoch + 1,
+                            'model': str(itf.models['dncnn']),
+                            'params': tmp_params,
+                            'optims': itf.optims,
+                            'args': args,
+                            'best_err': itf.best_err
+                        }
+
+                        for model_name in itf.models:
+                            state_dict['state_dict_' + model_name] = itf.models[model_name].state_dict()
+
+                        if not args.not_save:
+                            torch.save(state_dict, os.path.join(args.save, save_fn))
+                            print('[][] Model %s saved at epoch %d.'%(save_fn, epoch))
+
+                    print('[][] Model {} RelMSE: {:.3f}e-3 \t Best RelMSE: {:.3f}e-3'.format(save_fn, summaries[i]*1000, itf.best_err*1000))
+                    logging(writer, epoch, 0, 1, summaries[i], itf.best_err)
+
+        # # Update schedulers
+        for key in params:
+            if 'sched_' in key:
+                params[key].step()
+
+    torch.distributed.destroy_process_group()
+
+
 def main(args):
     # Set random seeds
     random.seed("Inyoung Cho, Yuchi Huo, Sungeui Yoon @ KAIST")
@@ -284,9 +504,16 @@ def main(args):
     torch.backends.cudnn.benchmark = True  #torch.backends.cudnn.deterministic = True
 
     # Get ready
-    dataset, dataloaders = init_data(args)
-    interfaces, params = init_model(dataset, args)
-    train(interfaces, dataloaders, params, args)
+    if not args.distributed:
+        dataset, dataloaders = init_data(args)
+        interfaces, params = init_model(dataset, args)
+        train(interfaces, dataloaders, params, args)
+    else:
+        print('gpu count', torch.cuda.device_count())
+        mp.spawn(ddp_train,
+                 args=(args,),
+                 nprocs=torch.cuda.device_count(),
+                 join=True)
 
 
 if __name__ == "__main__":
@@ -368,6 +595,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_single', action='store_true')
     parser.add_argument('--separate', action='store_true')
     parser.add_argument('--strided_down', action='store_true')
+    parser.add_argument('--soft', action='store_true')
 
     # (for NewAdvKPCN_2)
     parser.add_argument('--activation', type=str, default='relu',
@@ -380,7 +608,11 @@ if __name__ == "__main__":
 
     # (for NewAdvKPCN_1)
     parser.add_argument('--type', type=str, default='new_adv_2')
+    parser.add_argument('--revise', action='store_true')
+    parser.add_argument('--soft_label', action='store_true')
+    parser.add_argument('--error_type', type=str, default='L1')
     parser.add_argument('--interpolation', type=str, default='kernel')
+    parser.add_argument('--weight', type=str, default='sigmoid')
     
     
     args = parser.parse_args()
@@ -398,6 +630,9 @@ if __name__ == "__main__":
     for s in args.pnet_out_size:
         if args.disentangle != 'm11r11' and s % 2 != 0:
             raise RuntimeError('Argument `pnet_out_size` should be a list of even numbers')
-    print('device:', args.device_id)
-    torch.cuda.set_device(f'cuda:{args.device_id}')
+    if args.single_gpu:
+        print('device:', args.device_id)
+        torch.cuda.set_device(f'cuda:{args.device_id}')
+    else:
+        args.world_size = torch.cuda.device_count()
     main(args)

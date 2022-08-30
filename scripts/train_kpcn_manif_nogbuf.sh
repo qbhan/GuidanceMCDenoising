@@ -1,0 +1,23 @@
+python train_kpcn.py \
+    --single_gpu \
+    --batch_size 8 \
+    --val_epoch 1 \
+    --data_dir /mnt/ssd2/kbhan/KPCN \
+    --model_name KPCN_manif_p12_nogbuf_full_2 \
+    --desc "KPCN_manif_p12_nogbuf_full_2" \
+    --num_epoch 10 \
+    --lr_dncnn 1e-4 \
+    --manif_loss FMSE \
+    --pnet_out_size 12 \
+    --lr_pnet 1e-4 \
+    --use_llpm_buf \
+    --manif_learn \
+    --w_manif 0.1 \
+    --device_id 3 \
+    --save 'weights_full_2' \
+    --summary 'summary_full_2' \
+    --train_branches \
+    --no_gbuf \
+    --lr_ckpt \
+    --start_epoch 2 \
+    --best_err 2.4541e-3

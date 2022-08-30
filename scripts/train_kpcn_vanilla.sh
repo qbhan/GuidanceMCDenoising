@@ -3,11 +3,12 @@ python train_kpcn.py \
     --batch_size 8 \
     --val_epoch 1 \
     --data_dir /mnt/ssd2/kbhan/KPCN \
-    --model_name KPCN_full \
-    --desc "KPCN_full" \
+    --model_name KPCN__full_test \
+    --desc "KPCN_full_test" \
     --num_epoch 10 \
     --lr_dncnn 1e-4 \
+    --device_id 2 \
+    --save "weights_finetune"\
+    --summary "summary_finetune" \
     --train_branches \
-    --device_id 0 \
-    --save "weights_full"\
-    --summary "summary_full"
+    --num_epoch 10 \

@@ -17,7 +17,9 @@
 # limitations under the License.
 
 import numpy as np
+import torch
 import argparse
+import os
 
 
 def crop_like(src, tgt):
@@ -55,15 +57,17 @@ def LinearToSrgb(c):
     return np.clip(c ** kInvGamma, 0.0, 1.0)
 
 def ToneMapBatch(c):
+    # originally for numpy
     # c: (B, C=3, W, H)
     luminance = 0.2126 * c[:,0,:,:] + 0.7152 * c[:,1,:,:] + 0.0722 * c[:,2,:,:]
-    col = c.copy()
+    # col = c.copy()
+    col = c.clone()
     col[:,0,:,:] /= (1 + luminance / 1.5)
     col[:,1,:,:] /= (1 + luminance / 1.5)
     col[:,2,:,:] /= (1 + luminance / 1.5)
-    col = np.clip(col, 0, None)
+    col = torch.clip(col, 0, None)
     kInvGamma = 1.0 / 2.2
-    return np.clip(col ** kInvGamma, 0.0, 1.0)
+    return torch.clip(col ** kInvGamma, 0.0, 1.0)
 
 
 class BasicArgumentParser(argparse.ArgumentParser):
@@ -99,3 +103,13 @@ class BasicArgumentParser(argparse.ArgumentParser):
                             help='launch overfitting test.')
         self.add_argument('--summary', type=str, default='summary3/', 
                             help='directory to save the tensorboard summary.')
+
+        # for multi_gpu & amp
+        self.add_argument('--local_rank', type=int, default=os.getenv('LOCAL_RANK', 0),  help='Rank of the process for multiproc. Do not set manually.')
+        self.add_argument('--world_size', type=int, default=os.getenv('WORLD_SIZE', 1),  help='Number of processes for multiproc. Do not set manually.')  
+        self.add_argument('--fp16', action='store_true', help='Run training in fp16/mixed precision')
+        self.add_argument('--amp', type=str, default='pytorch', choices=['apex', 'pytorch'],    help='Implementation of automatic mixed precision')    
+        self.add_argument('--multi_gpu', type=str, default='ddp',  choices=['ddp', 'dp'],  help='method of multiple GPU, defualt DDP')
+        self.add_argument('--clip', type=float, default=0.25,   help='Clip threshold for gradients')   
+        self.add_argument('--grad-clip-thresh', type=float, default=1000.0,   help='Clip threshold for gradients')
+        self.add_argument('--distributed', action='store_true')

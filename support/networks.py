@@ -355,12 +355,14 @@ class NewAdvKPCN_1(nn.Module):
         width(int): number of feature channels in each branch.
     """
 
-    def __init__(self, g_in, p_in, ksize=21, depth=9, width=100, pnet_out=5, gen_activation="relu", disc_activtion="relu", output_type="linear", strided_down=False, interpolation='kernel'):
+    def __init__(self, g_in, p_in, ksize=21, depth=9, width=100, pnet_out=5, gen_activation="relu", disc_activtion="relu", output_type="linear", strided_down=False, interpolation='kernel', revise=False, weight='sigmoid'):
         super(NewAdvKPCN_1, self).__init__()
 
         self.ksize = ksize
         self.pnet_size = pnet_out + 2
         self.interpolation = interpolation
+        self.revise=revise
+        self.weight = weight
 
         self.G_diffuse = ops.ConvChain(
             g_in, ksize*ksize, depth=depth, width=width, ksize=5,
@@ -403,33 +405,38 @@ class NewAdvKPCN_1(nn.Module):
 
         self.dis_in = (g_in - 10) + (p_in - 10) + 3
 
-        self.D_diffuse = PixelDiscriminator(self.dis_in, 1 + 50, strided_down, activation=disc_activtion)
-        self.D_specular = PixelDiscriminator(self.dis_in, 1 + 50, strided_down, activation=disc_activtion)
+        if self.interpolation == 'direct': c=1
+        else: c= 1+ 50
+        self.D_diffuse = PixelDiscriminator(self.dis_in, c, strided_down, activation=disc_activtion)
+        self.D_specular = PixelDiscriminator(self.dis_in, c, strided_down, activation=disc_activtion)
 
 #        self.kernel_apply = ops.KernelApply(softmax=True, splat=False)
         self.kernel_apply = WeightedFilter(channels=3, kernel_size=ksize, bias=False, splat=False)
 
+        if self.revise: k=1
+        else: k=5
         if self.interpolation != 'direct':
+            if self.weight == 'sigmoid': 
+                w_out = 1
+                out_act = 'sigmoid'
+            elif self.weight == 'softmax': 
+                w_out = 2
+                out_act = 'linear'
+            else: NotImplementedError('{} is not supported to calculated interpolation weight'.format(self.weight))
             self.R_diffuse = ops.ConvChain(
-                100, 1, depth=5, width=width, ksize=5,
+                100, w_out, depth=k, width=width, ksize=5,
                 activation="relu", weight_norm=False, pad=True,
-                output_type="sigmoid")
+                output_type=out_act)
 
             self.R_specular = ops.ConvChain(
-                100, 1, depth=5, width=width, ksize=5,
+                100, w_out, depth=k, width=width, ksize=5,
                 activation="relu", weight_norm=False, pad=True,
-                output_type="sigmoid")
+                output_type=out_act)
 
         else:
-            self.R_diffuse = ops.ConvChain(
-                100, ksize*ksize, depth=5, width=width, ksize=5,
-                activation="relu", weight_norm=False, pad=True,
-                output_type="sigmoid")
+            self.R_diffuse = nn.Identity()
 
-            self.R_specular = ops.ConvChain(
-                100, ksize*ksize, depth=5, width=width, ksize=5,
-                activation="relu", weight_norm=False, pad=True,
-                output_type="sigmoid")
+            self.R_specular = nn.Identity()
 
 
     def forward(self, data, vis=False):
@@ -457,8 +464,11 @@ class NewAdvKPCN_1(nn.Module):
         # new features for path-branch & discriminator
         p_diffuse_in = torch.cat((data["kpcn_diffuse_in"][:,:10], data['paths_diffuse']), dim=1)
         p_specular_in = torch.cat((data["kpcn_specular_in"][:,:10], data['paths_specular']), dim=1)
-        dis_feat_diffuse = torch.cat((data["kpcn_diffuse_in"][:,10:], data['paths_diffuse']), dim=1)
-        dis_feat_specular = torch.cat((data["kpcn_specular_in"][:,10:], data['paths_specular']), dim=1)
+        # dis_feat_diffuse = torch.cat((data["kpcn_diffuse_in"][:,10:], data['paths_diffuse']), dim=1)
+        # dis_feat_specular = torch.cat((data["kpcn_specular_in"][:,10:], data['paths_specular']), dim=1)
+        paths_diffuse, paths_specular = data['paths_diffuse'].clone().detach(), data['paths_specular'].clone().detach()
+        dis_feat_diffuse = torch.cat((data["kpcn_diffuse_in"][:,10:], paths_diffuse), dim=1)
+        dis_feat_specular = torch.cat((data["kpcn_specular_in"][:,10:], paths_specular), dim=1)
 
         # p_diffuse_in = torch.cat((data["kpcn_diffuse_in"][:,:10], diff_pbuf), dim=1)
         # p_specular_in = torch.cat((data["kpcn_diffuse_in"][:,:10], spec_pbuf), dim=1)
@@ -503,14 +513,12 @@ class NewAdvKPCN_1(nn.Module):
             'specular_G': torch.cat([g_r_specular, crop_like(dis_feat_specular, g_r_specular)], 1),
             'specular_P': torch.cat([p_r_specular, crop_like(dis_feat_specular, p_r_specular)], 1),
         }
-        dis_out_diffuse = self.D_diffuse(batch_diffuse, 'newadv1')
-        dis_out_specular = self.D_specular(batch_specular, 'newadv1')
+        dis_out_diffuse = self.D_diffuse(batch_diffuse, self.interpolation) #'newadv1'
+        dis_out_specular = self.D_specular(batch_specular, self.interpolation)
 
         # First attempt
         # use hidden embeddings to find interpolation weight
         # due to sigmoid activation, it will have value between 0 and 1
-        int_weight_diffuse = self.R_diffuse(torch.cat([dis_out_diffuse['diffuse_G'][:, 1:], dis_out_diffuse['diffuse_P'][:, 1:]], dim=1))
-        int_weight_specular = self.R_specular(torch.cat([dis_out_specular['specular_G'][:, 1:], dis_out_specular['specular_P'][:, 1:]], dim=1))
 #        int_weight_diffuse, int_weight_specular = None, None
 
         if self.interpolation == 'kernel':
@@ -518,6 +526,8 @@ class NewAdvKPCN_1(nn.Module):
             # This part should be more sophisticated
             # n_k_diffuse = g_k_diffuse * dis_out['diffuse_G'] + p_k_diffuse * dis_out['diffuse_P']
             # n_k_specular = g_k_specular * dis_out['specular_G'] + p_k_specular * dis_out['specular_P']
+            int_weight_diffuse = self.R_diffuse(torch.cat([dis_out_diffuse['diffuse_G'][:, 1:], dis_out_diffuse['diffuse_P'][:, 1:]], dim=1))
+            int_weight_specular = self.R_specular(torch.cat([dis_out_specular['specular_G'][:, 1:], dis_out_specular['specular_P'][:, 1:]], dim=1))
             n_k_diffuse = g_k_diffuse * int_weight_diffuse + p_k_diffuse * (1.0 - int_weight_diffuse)
             n_k_specular = g_k_specular * int_weight_specular + p_k_specular * (1.0 - int_weight_specular)
             r_diffuse = self.kernel_apply(b_diffuse, F.softmax(n_k_diffuse, dim=1).contiguous())
@@ -526,18 +536,33 @@ class NewAdvKPCN_1(nn.Module):
         elif self.interpolation == 'image':
             # Interpolate the images to get the final image
             # in order to reduce redundant computation
+            int_weight_diffuse = self.R_diffuse(torch.cat([dis_out_diffuse['diffuse_G'][:, 1:], dis_out_diffuse['diffuse_P'][:, 1:]], dim=1))
+            int_weight_specular = self.R_specular(torch.cat([dis_out_specular['specular_G'][:, 1:], dis_out_specular['specular_P'][:, 1:]], dim=1))
             n_k_diffuse, n_k_specular = None, None
-            r_diffuse = g_r_diffuse * int_weight_diffuse + p_r_diffuse * (1.0 - int_weight_diffuse)
-            r_specular = g_r_specular * int_weight_specular + p_r_specular * (1.0 - int_weight_specular)
+            if self.weight == 'softmax':
+                # print(self.weight)
+                int_weight_diffuse = F.softmax(int_weight_diffuse, dim=1)
+                int_weight_specular = F.softmax(int_weight_specular, dim=1)
+                r_diffuse = g_r_diffuse * int_weight_diffuse[:, :1] + p_r_diffuse * int_weight_diffuse[:, 1:]
+                r_specular = g_r_specular * int_weight_specular[:, :1] + p_r_specular * int_weight_specular[:, 1:]
+            else:
+                r_diffuse = g_r_diffuse * int_weight_diffuse + p_r_diffuse * (1.0 - int_weight_diffuse)
+                r_specular = g_r_specular * int_weight_specular + p_r_specular * (1.0 - int_weight_specular)
 
         elif self.interpolation == 'direct':
             # use hidden embeddings to predict a new kernel to be applied
-            # might need a constraint that can make the new kernel not to diverge
-            n_k_diffuse = self.R_diffuse(torch.cat([dis_out_diffuse['diffuse_G'][:, 1:], dis_out_diffuse['diffuse_P'][:, 1:]], dim=1))
-            n_k_specular = self.R_specular(torch.cat([dis_out_specular['specular_G'][:, 1:], dis_out_specular['specular_P'][:, 1:]], dim=1))
+            # might need a const
+            # raint that can make the new kernel not to diverge
+            EPSILON = 1e-8
+            S_d_g, S_d_p, S_s_g, S_s_p = dis_out_diffuse['diffuse_G'], dis_out_diffuse['diffuse_P'], dis_out_specular['specular_G'], dis_out_specular['specular_P']
+            int_weight_diffuse, int_weight_specular = (S_d_g + EPSILON) / (S_d_g + S_d_p + 2 * EPSILON), (S_s_g + EPSILON) / (S_s_g + S_s_p + 2 * EPSILON)
+            n_k_diffuse = g_k_diffuse * int_weight_diffuse + p_k_diffuse * (1.0 - int_weight_diffuse)
+            n_k_specular = g_k_specular * int_weight_specular + p_k_specular * (1.0 - int_weight_specular)
             r_diffuse = self.kernel_apply(b_diffuse, F.softmax(n_k_diffuse, dim=1).contiguous())
             r_specular = self.kernel_apply(b_specular, F.softmax(n_k_specular, dim=1).contiguous())
 
+            
+        else: NotImplemented('interpolation strategy is not implemented. try one of three: kernel, image, direct')
 
         albedo = crop_like(data["kpcn_albedo"], r_diffuse).contiguous()
         final_specular = torch.exp(r_specular) - 1
@@ -641,8 +666,8 @@ class NewAdvKPCN_2(nn.Module):
 
         if self.interpolation == 'direct': outc = ksize*ksize
         else: outc = 1
-        self.D_diffuse = PixelClassifier(self.dis_in, outc=outc, strided_down=strided_down, activation=disc_activtion)
-        self.D_specular = PixelClassifier(self.dis_in, outc=outc, strided_down=strided_down, activation=disc_activtion)
+        self.D_diffuse = PixelClassifier(self.dis_in, outc=outc, strided_down=strided_down, activation=disc_activtion, interpolation=interpolation)
+        self.D_specular = PixelClassifier(self.dis_in, outc=outc, strided_down=strided_down, activation=disc_activtion, interpolation=interpolation)
 
 #        self.kernel_apply = ops.KernelApply(softmax=True, splat=False)
         self.kernel_apply = WeightedFilter(channels=3, kernel_size=ksize, bias=False, splat=False)
@@ -728,6 +753,12 @@ class NewAdvKPCN_2(nn.Module):
             n_k_specular = g_k_specular * int_weight_specular + p_k_specular * (1.0 - int_weight_specular)
             r_diffuse = self.kernel_apply(b_diffuse, F.softmax(n_k_diffuse, dim=1).contiguous())
             r_specular = self.kernel_apply(b_specular, F.softmax(n_k_specular, dim=1).contiguous())
+        elif self.interpolation == 'kernel_softmax':
+            int_weight_diffuse, int_weight_specular = dis_out_diffuse['weight'], dis_out_specular['weight']
+            n_k_diffuse = F.softmax(g_k_diffuse, dim=1) * int_weight_diffuse + F.softmax(p_k_diffuse, dim=1) * (1.0 - int_weight_diffuse)
+            n_k_specular = F.softmax(g_k_specular, dim=1) * int_weight_specular + F.softmax(p_k_specular, dim=1) * (1.0 - int_weight_specular)
+            r_diffuse = self.kernel_apply(b_diffuse, F.softmax(n_k_diffuse, dim=1).contiguous())
+            r_specular = self.kernel_apply(b_specular, F.softmax(n_k_specular, dim=1).contiguous())
         elif self.interpolation == 'direct':
             # use hidden embeddings to predict a new kernel to be applied
             # might need a constraint that can make the new kernel not to diverge
@@ -788,118 +819,159 @@ class NewAdvKPCN_2(nn.Module):
 
         return output
 
-class ModKPCN(nn.Module):
-    """Re-implementation of [Bako 2017].
+class PixelDiscriminator(nn.Module):
+    def __init__(self, n_in, n_out, use_ch=False, strided_down=False, activation="relu"):
+        super(PixelDiscriminator, self).__init__()
+        # print('unet', n_in, n_out)
+        # print("PixelDiscriminator", activation)
+        self.unet = SimpleUNet(n_in, n_out, strided_down=strided_down, activation=activation)
+        # self.unet = nn.Conv2d(n_in, n_out, 1)
+        self.sigmoid = nn.Sigmoid()
+        if activation=='leaky_relu': self.relu = nn.LeakyReLU()
+        elif activation=='relu': self.relu = nn.ReLU()
+        else: assert NotImplementedError('Use activations of RELU family')
 
-    Kernel-Predicting Convolutional Networks for Denoising Monte Carlo
-    Renderings: <http://cvc.ucsb.edu/graphics/Papers/SIGGRAPH2017_KPCN/>
 
-    Args:
-        n_in(int): number of input channels in the diffuse/specular streams.
-        ksize(int): size of the gather reconstruction kernel.
-        depth(int): number of conv layers in each branch.
-        width(int): number of feature channels in each branch.
-    """
-
-    def __init__(self, g_in, p_in, ksize=21, depth=18, width=100, activation="relu", output_type="linear"):
-        super(ModKPCN, self).__init__()
-
-        self.ksize = ksize
-
-        self.G = ops.ConvChain(
-            g_in, ksize*ksize, depth=depth, width=width, ksize=3,
-            activation=activation, weight_norm=False, pad=True,
-            output_type=output_type)
-
-        self.P = ops.ConvChain(
-            p_in, ksize*ksize, depth=depth, width=width, ksize=3,
-            activation=activation, weight_norm=False, pad=True,
-            output_type=output_type)
-
-        self.kernel_apply = ops.KernelApply(softmax=True, splat=True)
-
-    def forward(self, data, vis=False):
-        # new features for path-branch & discriminator
-        p_in = torch.cat([data['kpcn_in'][:, :20], data['paths'].mean(1)], dim=1) # currently using mean of path features over samples. Might further use path model for better compression
-
-        # Denoise both gbuf_only & pbuf_only branch
-        g_kernel = self.G(data["kpcn_in"])
-        p_kernel = self.P(p_in)
-
-        assert g_kernel.shape[1] == p_kernel.shape[1]
-
-        buffer = crop_like(data["kpcn_buffer"],
-                              g_kernel).contiguous()
-
-        g_rad, _ = self.kernel_apply(buffer, g_kernel)
-        p_rad, _ = self.kernel_apply(buffer, p_kernel)
-
-        if vis:
-            return dict(g_radiance=g_rad, p_radiance=p_rad,
-                        g_kernel=g_kernel, p_kernel=p_kernel)
+    def forward(self, data, mode='diff'):
+        if mode == 'diff': 
+            x, _ = self.unet(data['kpcn_diffuse_in'])
+            y, _ = self.unet(data['target_diffuse'])
+            output = dict(fake=self.sigmoid(x[:,:1]), real=self.sigmoid(y[:,:1]), feat=x[:,1:], fake_2=None)
+        elif mode =='spec': 
+            x, _ = self.unet(data['kpcn_specular_in'])
+            y, _ = self.unet(data['target_specular'])
+            output = dict(fake=self.sigmoid(x[:,:1]), real=self.sigmoid(y[:,:1]), feat=x[:,1:], fake_2=None)
+        elif mode == 'adv_2':
+            x, _ = self.unet(data['g_rad_in'])
+            y, _ = self.unet(data['target_in'])
+            z, _ = self.unet(data['p_rad_in'])
+            # output = dict(fake=self.sigmoid(x[:,:1]), real=self.sigmoid(y[:,:1]), feat=x[:,1:], fake_2=self.sigmoid(z[:,:1]))
+            output = dict(fake=self.sigmoid(x), real=self.sigmoid(y), feat=x[:,1:], fake_2=self.sigmoid(z))
+        elif mode == 'single_stream':
+            x, _ = self.unet(data['kpcn_in'])
+            y, _ = self.unet(data['target'])
+            z, _ = torch.zeros_like(y) # TODO add this line in git
+            output = dict(fake=self.sigmoid(x[:,:1]), real=self.sigmoid(y[:,:1]), feat=x[:,1:], fake_2=None)
+        elif mode == 'final':
+            x, _ = self.unet(data['final_in'])
+            output = dict(fake=self.sigmoid(x[:,:1]))
+        elif mode == 'direct':
+            output = {}
+            for k in data:
+                x, _ = self.unet(data[k])
+                output[k] = self.sigmoid(x)
         else:
-            return dict(g_radiance=g_rad, p_radiance=p_rad,
-                        g_kernel=None, p_kernel=None)
+            output = {}
+            for k in data:
+                x, _ = self.unet(data[k])
+                output[k] = torch.cat((self.sigmoid(x[:,:1]), self.relu(x[:,1:])), dim=1)
 
-class SingleKPCN(nn.Module):
-    """Re-implementation of [Bako 2017].
+        return output
 
-    Kernel-Predicting Convolutional Networks for Denoising Monte Carlo
-    Renderings: <http://cvc.ucsb.edu/graphics/Papers/SIGGRAPH2017_KPCN/>
 
-    Args:
-        n_in(int): number of input channels in the diffuse/specular streams.
-        ksize(int): size of the gather reconstruction kernel.
-        depth(int): number of conv layers in each branch.
-        width(int): number of feature channels in each branch.
-    """
+class PixelClassifier(nn.Module):
+    '''
+    A pixel-wise classifier with a U-Net like architecture.
+    Consisted of two decoders sharing the same decoder.
+    Each decoder outputs 1. Score Map and 2. Interpolation Weight.
+    The second decoder will have concatenated embeddings of each pass of encoder.
+    '''
+    def __init__(self, ic, outc=1, intermc=64, bilinear=True, strided_down=False, activation='leaky_relu', interpolation='kernel'):
+        super(PixelClassifier, self).__init__()
+        self.ic = ic
+        self.intermc = intermc
+        self.outc = outc
+        self.factor = 2 if bilinear else 1
+        self.interpolation = interpolation
 
-    def __init__(self, n_in, ksize=21, depth=9, width=100):
-        super(SingleKPCN, self).__init__()
+        if strided_down:
+            down = StridedDown
+        else:
+            down = Down
 
-        self.ksize = ksize
+        if intermc == 64:
+            in_ch = [64, 64, 64, 80, 96]
+            out_ch = [80, 64, 64, 32, 32]
+            # in_ch = [64, 64, 64, 64, 64]
+            # out_ch = [64, 64, 64, 64, 64]
+        else:
+            assert NotImplemented('intermc should be 64')
+        # encoder
+        # self.enc_1 = DoubleConv(ic, intermc, activation=activation)
+        # self.enc_2 = down(intermc, intermc*2, activation=activation)
+        # self.enc_3 = down(intermc*2, intermc*3, activation=activation)
+        # self.enc_4 = down(intermc*3, intermc*4, activation=activation)
+        self.enc_1 = DoubleConv(ic, in_ch[0], activation=activation)
+        self.enc_2 = down(in_ch[0], in_ch[1], activation=activation)
+        self.enc_3 = down(in_ch[1], in_ch[2], activation=activation)
+        self.enc_4 = down(in_ch[2], in_ch[3], activation=activation)
+        self.enc_5 = down(in_ch[3], in_ch[4], activation=activation)
 
-        self.denoise = ops.ConvChain(
-            n_in, ksize*ksize, depth=depth, width=width, ksize=5,
-            activation="relu", weight_norm=False, pad=False,
-            output_type="linear")
 
-        self.kernel_apply = ops.KernelApply(softmax=True, splat=True)
+        # decoder 1
+        # decoder for returning scoremap
+        # self.dec1_1 = Up(intermc*7, intermc*3, bilinear, activation=activation)
+        # self.dec1_2 = Up(intermc*5, intermc*2, bilinear, activation=activation)
+        # self.dec1_3 = Up(intermc*3, intermc, bilinear, activation=activation)
+        # self.dec1_4 = OutConv(intermc, 1, activation='sigmoid')
+        self.dec1_1 = Up(in_ch[4]+in_ch[3], out_ch[0], bilinear, activation=activation)
+        self.dec1_2 = Up(out_ch[0]+in_ch[2], out_ch[1], bilinear, activation=activation)
+        self.dec1_3 = Up(out_ch[1]+in_ch[1], out_ch[2], bilinear, activation=activation)
+        self.dec1_4 = Up(out_ch[2]+in_ch[0], out_ch[3], bilinear, activation=activation)
+        self.dec1_5 = OutConv(out_ch[3], 1, activation='sigmoid')
 
-    def forward(self, data, vis=False):
-        """Forward pass of the model.
+        # decoder 2
+        # decoder for returning interpolation weight
+        # self.dec2_1 = Up(intermc*14, intermc*7, bilinear, activation=activation)
+        # self.dec2_2 = Up(intermc*11, intermc*4, bilinear, activation=activation)
+        # self.dec2_3 = Up(intermc*6, intermc, bilinear, activation=activation)
+        # self.dec2_4 = OutConv(intermc, outc, activation='sigmoid')
+        self.dec2_1 = Up(in_ch[4]*2+in_ch[3]*2, out_ch[0], bilinear, activation=activation)
+        self.dec2_2 = Up(out_ch[0]+in_ch[2]*2, out_ch[1], bilinear, activation=activation)
+        self.dec2_3 = Up(out_ch[1]+in_ch[1]*2, out_ch[2], bilinear, activation=activation)
+        self.dec2_4 = Up(out_ch[2]+in_ch[0]*2, out_ch[3], bilinear, activation=activation)
+        if self.interpolation != 'direct': self.dec2_5 = OutConv(out_ch[3], 1, activation='sigmoid')
+        else: self.dec2_5 = OutConv(out_ch[3], 21*21, activation='sigmoid')
 
-        Args:
-            data(dict) with keys:
-                "kpcn_diffuse_in":
-                "kpcn_specular_in":
-                "kpcn_diffuse_buffer":
-                "kpcn_specular_buffer":
-                "kpcn_albedo":
+    def __str__(self):
+        return "Pixel-wise Classifier i{}in{}o{}".format(self.ic, self.intermc, self.outc)
+    
+    def forward(self, data, mode='train'):
+        # need to put assertion for keys in data input
+        assert 'noisy_G' in data
+        assert 'noisy_P' in data
+        assert 'clean' in data
+        output = {}
+        encode = {}
+        for k in data:
+            enc1 = self.enc_1(data[k])  # c=64
+            enc2 = self.enc_2(enc1)     # c=64
+            enc3 = self.enc_3(enc2)     # c=128
+            enc4 = self.enc_4(enc3)     # c=128
+            enc5 = self.enc_5(enc4)     # c=128
+            if mode == 'train':
+                # out = self.dec1_1(enc4, enc3)   # c=64
+                # out = self.dec1_2(out, enc2)    # c=64
+                # out = self.dec1_3(out, enc1)    # c=64
+                # out = self.dec1_4(out)          # c=64
+                out = self.dec1_1(enc5, enc4)   # c=64
+                out = self.dec1_2(out, enc3)    # c=64
+                out = self.dec1_3(out, enc2)    # c=64
+                out = self.dec1_4(out, enc1)
+                out = self.dec1_5(out)          # c=64
+                output[k] = out
+            else:
+                output[k] = None
+            # encode[k] = [enc4, enc3, enc2, enc1]
+            encode[k] = [enc5, enc4, enc3, enc2, enc1]
 
-        Returns:
-            (dict) with keys:
-                "radiance":
-                "diffuse":
-                "specular":
-        """
-        # Process the diffuse and specular channels independently
-        k_denoise = self.diffuse(data["kpcn_in"])
-
-        # Match dimensions
-        b_denoise = crop_like(data["kpcn_buffer"],
-                              k_denoise).contiguous()
-        # Kernel reconstruction
-        r_denoise, _ = self.kernel_apply(b_denoise, k_denoise)
-
-        # Combine diffuse/specular/albedo
-        # albedo = crop_like(data["kpcn_albedo"], r_diffuse)
-        # final_specular = th.exp(r_specular) - 1
-        # final_diffuse = albedo * r_diffuse
-        # final_radiance = final_diffuse + final_specular
-        if vis: output = dict(radiance=r_denoise, k_denoise=k_denoise)
-        else: output = dict(radiance=r_denoise, k_denoise=None)
-
+        out = self.dec2_1(torch.cat([encode['noisy_G'][0], encode['noisy_G'][0]], dim=1), torch.cat([encode['noisy_G'][1], encode['noisy_G'][1]], dim=1))
+        out = self.dec2_2(out, torch.cat([encode['noisy_G'][2], encode['noisy_P'][2]], dim=1))
+        out = self.dec2_3(out, torch.cat([encode['noisy_G'][3], encode['noisy_P'][3]], dim=1))
+        # out = self.dec2_4(out)
+        out = self.dec2_4(out, torch.cat([encode['noisy_G'][4], encode['noisy_P'][4]], dim=1))
+        out = self.dec2_5(out)
+        output['weight'] = out
         return output
 
 
@@ -1163,119 +1235,6 @@ class KPCN_Single(nn.Module):
         
         output = dict(radiance=r_denoise, kernel=k_denoise)
 
-        return output
-
-class PixelDiscriminator(nn.Module):
-    def __init__(self, n_in, n_out, use_ch=False, strided_down=False, activation="relu"):
-        super(PixelDiscriminator, self).__init__()
-        # print('unet', n_in, n_out)
-        # print("PixelDiscriminator", activation)
-        self.unet = SimpleUNet(n_in, n_out, strided_down=strided_down, activation=activation)
-        # self.unet = nn.Conv2d(n_in, n_out, 1)
-        self.sigmoid = nn.Sigmoid()
-    
-    def forward(self, data, mode='diff'):
-        if mode == 'diff': 
-            x, _ = self.unet(data['kpcn_diffuse_in'])
-            y, _ = self.unet(data['target_diffuse'])
-            output = dict(fake=self.sigmoid(x[:,:1]), real=self.sigmoid(y[:,:1]), feat=x[:,1:], fake_2=None)
-        elif mode =='spec': 
-            x, _ = self.unet(data['kpcn_specular_in'])
-            y, _ = self.unet(data['target_specular'])
-            output = dict(fake=self.sigmoid(x[:,:1]), real=self.sigmoid(y[:,:1]), feat=x[:,1:], fake_2=None)
-        elif mode == 'adv_2':
-            x, _ = self.unet(data['g_rad_in'])
-            y, _ = self.unet(data['target_in'])
-            z, _ = self.unet(data['p_rad_in'])
-            # output = dict(fake=self.sigmoid(x[:,:1]), real=self.sigmoid(y[:,:1]), feat=x[:,1:], fake_2=self.sigmoid(z[:,:1]))
-            output = dict(fake=self.sigmoid(x), real=self.sigmoid(y), feat=x[:,1:], fake_2=self.sigmoid(z))
-        elif mode == 'single_stream':
-            x, _ = self.unet(data['kpcn_in'])
-            y, _ = self.unet(data['target'])
-            z, _ = torch.zeros_like(y) # TODO add this line in git
-            output = dict(fake=self.sigmoid(x[:,:1]), real=self.sigmoid(y[:,:1]), feat=x[:,1:], fake_2=None)
-        elif mode == 'final':
-            x, _ = self.unet(data['final_in'])
-            output = dict(fake=self.sigmoid(x[:,:1]))
-        else:
-            output = {}
-            for k in data:
-                x, _ = self.unet(data[k])
-                x = self.sigmoid(x)
-                output[k] = x
-
-        return output
-
-
-class PixelClassifier(nn.Module):
-    '''
-    A pixel-wise classifier with a U-Net like architecture.
-    Consisted of two decoders sharing the same decoder.
-    Each decoder outputs 1. Score Map and 2. Interpolation Weight.
-    The second decoder will have concatenated embeddings of each pass of encoder.
-    '''
-    def __init__(self, ic, outc=1, intermc=64, bilinear=True, strided_down=False, activation='leaky_relu'):
-        super(PixelClassifier, self).__init__()
-        self.ic = ic
-        self.intermc = intermc
-        self.outc = outc
-        self.factor = 2 if bilinear else 1
-
-        if strided_down:
-            down = StridedDown
-        else:
-            down = Down
-
-        # encoder
-        self.enc_1 = DoubleConv(ic, intermc, activation=activation)
-        self.enc_2 = down(intermc, intermc, activation=activation)
-        self.enc_3 = down(intermc, intermc*2, activation=activation)
-        self.enc_4 = down(intermc*2, intermc*4 // self.factor, activation=activation)
-
-        # decoder 1
-        # decoder for returning scoremap
-        self.dec1_1 = Up(intermc*4, intermc*2 // self.factor, bilinear, activation=activation)
-        self.dec1_2 = Up(intermc*2, intermc, bilinear, activation=activation)
-        self.dec1_3 = Up(intermc*2, intermc, bilinear, activation=activation)
-        self.dec1_4 = OutConv(intermc, 1, activation='sigmoid')
-
-        # decoder 2
-        # decoder for returning interpolation weight
-        self.dec2_1 = Up(intermc*8, intermc*2, bilinear, activation=activation)
-        self.dec2_2 = Up(intermc*4, intermc, bilinear, activation=activation)
-        self.dec2_3 = Up(intermc*3, intermc, bilinear, activation=activation)
-        self.dec2_4 = OutConv(intermc, outc, activation='sigmoid')
-
-    def __str__(self):
-        return "Pixel-wise Classifier i{}in{}o{}".format(self.ic, self.intermc, self.outc)
-    
-    def forward(self, data, mode='train'):
-        # need to put assertion for keys in data input
-        assert 'noisy_G' in data
-        assert 'noisy_P' in data
-        assert 'clean' in data
-        output = {}
-        encode = {}
-        for k in data:
-            enc1 = self.enc_1(data[k])  # c=64
-            enc2 = self.enc_2(enc1)     # c=64
-            enc3 = self.enc_3(enc2)     # c=128
-            enc4 = self.enc_4(enc3)     # c=128
-            if mode == 'train':
-                out = self.dec1_1(enc4, enc3)   # c=64
-                out = self.dec1_2(out, enc2)    # c=64
-                out = self.dec1_3(out, enc1)    # c=64
-                out = self.dec1_4(out)          # c=64
-                output[k] = out
-            else:
-                output[k] = None
-            encode[k] = [enc4, enc3, enc2, enc1]
-
-        out = self.dec2_1(torch.cat([encode['noisy_G'][0], encode['noisy_G'][0]], dim=1), torch.cat([encode['noisy_G'][1], encode['noisy_G'][1]], dim=1))
-        out = self.dec2_2(out, torch.cat([encode['noisy_G'][2], encode['noisy_P'][2]], dim=1))
-        out = self.dec2_3(out, torch.cat([encode['noisy_G'][3], encode['noisy_P'][3]], dim=1))
-        out = self.dec2_4(out)
-        output['weight'] = out
         return output
 
 

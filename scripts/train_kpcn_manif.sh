@@ -3,18 +3,18 @@ python train_kpcn.py \
     --batch_size 8 \
     --val_epoch 1 \
     --data_dir /mnt/ssd2/kbhan/KPCN \
-    --model_name KPCN_manif_p12 \
-    --desc "KPCN_manif_p12" \
+    --model_name KPCN_manif_p12_full \
+    --desc "KPCN_manif_p12_full" \
     --num_epoch 10 \
-    --lr_dncnn 1e-4 \
+    --lr_dncnn 1e-6 \
     --manif_loss FMSE \
     --pnet_out_size 12 \
-    --lr_dncnn 1e-4 \
-    --lr_pnet 1e-4 \
+    --lr_pnet 1e-6 \
     --use_llpm_buf \
     --manif_learn \
     --w_manif 0.1 \
-    --train_branches \
-    --device_id 1 \
-    --save 'weights_8' \
-    --summary 'summary_8'
+    --device_id 3 \
+    --save 'weights_finetune' \
+    --summary 'summary_finetune' \
+    --start_epoch 4 \
+    --best_err 3.077e-2
