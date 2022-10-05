@@ -1,0 +1,27 @@
+python train_ensemble.py \
+    --single_gpu \
+    --batch_size 8 \
+    --val_epoch 1 \
+    --data_dir /mnt/ssd2/kbhan/KPCN \
+    --model_name KPCN_ensemble_error_SMAPE_lr5e5_finetune_2 \
+    --desc "KPCN_ensemble_error_SMAPE_lr5e5_finetune_2" \
+    --num_epoch 10 \
+    --lr_dncnn 1e-6 \
+    --use_llpm_buf \
+    --lr_pnet 1e-6 \
+    --manif_learn \
+    --manif_loss FMSE \
+    --pnet_out_size 12 \
+    --w_manif 0.1 \
+    --lr_enet 5e-5 \
+    --w_error 1.0 \
+    --lr_inet 1e-4 \
+    --model_type 'dsbn_unet' \
+    --device_id 1 \
+    --save 'weights_ens_8' \
+    --summary 'summary_ens_8' \
+    --train_branches \
+    --error \
+    --error_type 'SMAPE' \
+    --interpolate \
+    --load
