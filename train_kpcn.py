@@ -24,8 +24,7 @@ from support.networks import PathNet
 from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
 from support.losses import RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
-from support.interfaces import KPCNInterface, KPCNRefInterface, KPCNPreInterface
-
+from support.interfaces import KPCNInterface
 # Gharbi et al. dependency
 sys.path.insert(1, configs.PATH_SBMC)
 try:
@@ -222,7 +221,7 @@ def train(interfaces, dataloaders, params, args):
             state_dict = {
                 'description': args.desc, #
                 'start_epoch': epoch + 1,
-                'model': str(itf.models['dncnn']),
+                'model': str(itf),
                 'params': tmp_params,
                 'optims': itf.optims,
                 'args': args,
@@ -251,7 +250,7 @@ def train(interfaces, dataloaders, params, args):
                     state_dict = {
                         'description': args.desc, #
                         'start_epoch': epoch + 1,
-                        'model': str(itf.models['dncnn']),
+                        'model': str(itf),
                         'params': tmp_params,
                         'optims': itf.optims,
                         'args': args,

@@ -88,12 +88,35 @@ class AdvMCD_Generator(nn.Module):
         f_diff = torch.cat((data['kpcn_diffuse_in'][:, 10:13], data['kpcn_diffuse_in'][:, 20:21], data['kpcn_diffuse_in'][:, 24:27]))
         r_spec = data['kpcn_specular_buffer']
         f_spec = torch.cat((data['kpcn_specular_in'][:, 10:13], data['kpcn_specular_in'][:, 20:21], data['kpcn_specular_in'][:, 24:27]))
-        albedo = crop_like(data['kpcn_albedo'], r_diffuse)
-        
+
+        # denoise
+        d_diff = self.diffuse((r_diff, f_diff))
+        d_spec = self.specular((r_spec, f_spec))
+
+        # final radiance via albedo multiplication & reverse log transformation
+        albedo = crop_like(data['kpcn_albedo'], d_diff)
+        d_final = (albedo * d_diff) + (torch.exp(d_spec) - 1.0)
+
+        output = dict(radiance=d_final, diffuse=d_diff, specular=d_spec)
+        return output
         
 
-        
+class AdvMCD_Discriminator(nn.Module):
+    def __init__(self):
+        super(AdvMCD_Discriminator, self).__init__()
 
+        self.diffuse = Discriminator()
+        self.specular = Discriminator()
+
+    def forward(self, data):
+        '''
+        fake['diffuse'], fake['specular']
+        real['diffuse'], real['specular']
+        '''
+        output = dict(diffuse=self.diffuse(data['diffuse']), specular=self.specular(data['specular']))
+        return output
+
+        
 
 class PathNet(nn.Module):
     """Path embedding network (Cho et al. 2021)

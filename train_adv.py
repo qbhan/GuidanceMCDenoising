@@ -17,24 +17,23 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
 
+from support.datasets import MSDenoiseDataset, DenoiseDataset
+from support.utils import BasicArgumentParser
+from support.losses import RelativeMSE
+
 # Cho et al. dependency
 import configs
 from support.networks import PathNet
-# our strategy
-from support.networks import AdvKPCN, NewAdvKPCN_2, PixelDiscriminator, NewAdvKPCN_1
-from support.datasets import MSDenoiseDataset, DenoiseDataset
-from support.utils import BasicArgumentParser
-from support.losses import RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
-from support.interfaces import AdvKPCNInterface, NewAdvKPCNInterface, NewAdvKPCNInterface1, NewAdvKPCNInterface2
-# from train_kpcn import validate_kpcn, train, train_epoch_kpcn
+from support.losses import FeatureMSE, GlobalRelativeSimilarityLoss
+# Xu et al. dependency
+from support.networks import AdvMCD_Discriminator, AdvMCD_Generator
+from support.modules import Generator, Discriminator
+from support.losses import GANLoss, GradientPenaltyLoss
 
 
-# for multi_gpu and amp support from KISTI
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.nn import DataParallel as DP
-from torch.utils.data.distributed import DistributedSampler
-import torch.multiprocessing as mp
-import torch.distributed as dist
+from support.interfaces import AdvMCDInterface
+from train_kpcn import validate_kpcn, train, train_epoch_kpcn
+
 # import logging
 from tensorboardX import SummaryWriter
 from train_kpcn import logging, logging_training
@@ -48,9 +47,9 @@ def init_data(args):
     '''
     datasets = {}
     datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
     datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
 
     dataloaders = {}
 
@@ -82,6 +81,7 @@ def init_model(dataset, args, rank=0):
         # Initialize models (NOTE: modified for each model) 
         models = {}
         if args.use_llpm_buf:
+            NotImplementedError('AdvMCD with PathNet not yet done')
             if args.disentangle in ['m10r01', 'm11r01']:
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size // 2
             else:
@@ -97,12 +97,15 @@ def init_model(dataset, args, rank=0):
                     p_in = 10 + n_out + 1 #23
                 else:
                     p_in = 46
-                models['dncnn'] = NewAdvKPCN_1(35, p_in, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down, interpolation=args.interpolation, revise=args.revise, weight=args.weight, model_type=args.model_type)
-                print('Initialize AdvKPCN for path descriptors (# of input channels: %d).'%(n_in))
+                models['generator_diffuse'] = AdvMCD_Generator()
+                print('Initialize AdvMCD for path descriptors (# of input channels: %d).'%(n_in))
         else:
             n_in = dataset['train'].dncnn_in_size
-            models['dncnn'] = AdvKPCN(n_in, pnet_out=pnet_out_size+2)
-            print('Initialize AdvKPCN for vanilla buffers (# of input channels: %d).'%(n_in))
+            models['generator_diffuse'] = Generator()
+            models['generator_specular'] = Generator()
+            models['discriminator_diffuse'] = Discriminator()
+            models['discriminator_specular'] = Discriminator()
+            print('Initialize AdvMCD for vanilla buffers')
         
         # Load pretrained weights
         if len(list(itertools.product(*tmp))) == 1:
@@ -161,21 +164,8 @@ def init_model(dataset, args, rank=0):
         # Initialize optimizers
         optims = {}
         for model_name in models:
-            lr = args.lr_dncnn if 'dncnn' == model_name else lr_pnet
-            if args.use_pretrain and 'dncnn' == model_name:
-                lr_finetune = 1e-6
-                pre_params = []
-                all_params = set(models[model_name].parameters())
-                model_state_dict = models[model_name].state_dict()
-                for k in model_state_dict:
-                    if 'gbuf' in k: pre_params += list(model_state_dict[k])
-                    # else: full_params += models[model_name][k]
-                pre_params = set(pre_params)
-                full_params = all_params - pre_params
-                optims['optim_' + model_name] = optim.Adam(pre_params, lr=lr_finetune)
-                optims['optim_' + model_name] = optim.Adam(full_params, lr=lr)
-            else:
-                optims['optim_' + model_name] = optim.Adam(models[model_name].parameters(), lr=lr)
+            lr = args.lr_dncnn if 'generator' in model_name else lr_pnet
+            optims['optim_' + model_name] = optim.Adam(models[model_name].parameters(), lr=lr)
             
             if not is_pretrained:
                 continue
@@ -199,25 +189,15 @@ def init_model(dataset, args, rank=0):
             optims['optim_' + model_name].param_groups[0]['capturable'] = True
 
         # Initialize losses (NOTE: modified for each model)
-        if not args.soft_label:
-            loss_funcs = {
-                'l_diffuse': nn.L1Loss(),
-                'l_specular': nn.L1Loss(),
-                'l_recon': nn.L1Loss(),
-                'l_test': RelativeMSE(),
-                'l_adv': nn.BCELoss(),
-            }
-        else:
-            if args.error_type == 'L1': l_adv = nn.L1Loss()
-            elif args.error_type == 'MSE': l_adv = nn.MSELoss()
-            else: l_adv = nn.L1Loss()
-            loss_funcs = {
-                'l_diffuse': nn.L1Loss(),
-                'l_specular': nn.L1Loss(),
-                'l_recon': nn.L1Loss(),
-                'l_test': RelativeMSE(),
-                'l_adv': l_adv
-            }
+        loss_funcs = {
+            'l_diffuse': nn.L1Loss(),
+            'l_specular': nn.L1Loss(),
+            'l_recon': nn.L1Loss(),
+            'l_test': RelativeMSE(),
+            'l_gan': GANLoss(),
+            'l_gp': GradientPenaltyLoss(),
+        }
+
         if args.manif_learn:
             if args.manif_loss == 'FMSE':
                 loss_funcs['l_manif'] = FeatureMSE(non_local = not args.local)
@@ -232,24 +212,11 @@ def init_model(dataset, args, rank=0):
         for loss_name in loss_funcs:
             loss_funcs[loss_name].cuda()
 
-        # Initialize a training interface (NOTE: modified for each model)
-        # print('interface', args.use_single, args.type=='new_adv_1')
-        if not args.use_single:
-            if args.type=='new_adv_1':
-                itf = NewAdvKPCNInterface1(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, train_branches=args.train_branches, use_adv=args.use_adv)
-            elif args.type == 'new_adv_2':
-                itf = NewAdvKPCNInterface2(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, train_branches=args.train_branches, use_adv=args.use_adv)
-            else:
-                print('why?')
-                itf = AdvKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
-        else:
-            if args.type == 'new_adv_1':
-                itf = NewAdvKPCNInterface1(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
-            else:    
-                itf = NewAdvKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, use_adv=args.use_adv)
+        # params['sched'] = optim.lr_scheduler.MultiStepLR(optims['optim_dncnn'], step_size=3, gamma=0.5, last_epoch=args.start_epoch-1)
         # if is_pretrained:
-        #     # print('Use the checkpoint best error %.3e'%(args.best_err))
-        #     itf.best_err = args.best_err
+        #     params['sched_dncnn'].load_state_dict(ck['params']['sched_dncnn'].state_dict())
+
+        itf = AdvMCDInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn)
         interfaces.append(itf)
     
     # Initialize a visdom visualizer object
@@ -276,17 +243,9 @@ def main(args):
     torch.backends.cudnn.benchmark = True  #torch.backends.cudnn.deterministic = True
 
     # Get ready
-    if not args.distributed:
-        dataset, dataloaders = init_data(args)
-        interfaces, params = init_model(dataset, args)
-        train(interfaces, dataloaders, params, args)
-    else:
-        print('gpu count', torch.cuda.device_count())
-        mp.spawn(ddp_train,
-                 args=(args,),
-                 nprocs=torch.cuda.device_count(),
-                 join=True)
-
+    dataset, dataloaders = init_data(args)
+    interfaces, params = init_model(dataset, args)
+    train(interfaces, dataloaders, params, args)
 
 if __name__ == "__main__":
     """ NOTE: Example Training Scripts """
@@ -349,43 +308,11 @@ if __name__ == "__main__":
     parser.add_argument('--device_id', type=int, default=0,
                         help='device id')
 
-    parser.add_argument('--kpcn_ref', action='store_true',
-                        help='train KPCN-Ref model.')
-    parser.add_argument('--kpcn_pre', action='store_true',
-                        help='train KPCN-Pre model.')
     parser.add_argument('--not_save', action='store_true',
                         help='do not save checkpoint (debugging purpose).')
     parser.add_argument('--local', action='store_true', help='device id')
 
     # new arguments
-    parser.add_argument('--use_skip', action='store_true')
-    parser.add_argument('--use_adv', action='store_true')
-    parser.add_argument('--use_pretrain', action='store_true')
-    parser.add_argument('--w_adv', nargs='+', default=[0.0001], 
-                        help='ratio of the adversarial learning loss to \
-                        the reconstruction loss.')
-    parser.add_argument('--use_single', action='store_true')
-    parser.add_argument('--separate', action='store_true')
-    parser.add_argument('--strided_down', action='store_true')
-    parser.add_argument('--soft', action='store_true')
-
-    # (for NewAdvKPCN_2)
-    parser.add_argument('--activation', type=str, default='relu',
-                        help='`relu`, `leaky_relu`, `tanh`, or `elu`')
-    parser.add_argument('--output_type', type=str, default='linear',
-                        help='`linear`, `relu`, `leaky_relu`, `sigmoid`, `tanh`, `elu`, or `softplus`,')
-    parser.add_argument('--disc_activation', type=str, default='relu',
-                        help='`relu`, `leaky_relu`, or `linear`')
-    parser.add_argument('--use_krn', action='store_true')
-
-    # (for NewAdvKPCN_1)
-    parser.add_argument('--type', type=str, default='new_adv_2')
-    parser.add_argument('--revise', action='store_true')
-    parser.add_argument('--soft_label', action='store_true')
-    parser.add_argument('--error_type', type=str, default='L1')
-    parser.add_argument('--interpolation', type=str, default='kernel')
-    parser.add_argument('--weight', type=str, default='sigmoid')
-    parser.add_argument('--model_type', type=str, default='unet')
     
     
     args = parser.parse_args()
