@@ -21,7 +21,7 @@ from tensorboardX import SummaryWriter
 import configs
 from support.networks import PathNet
 # our strategy
-from support.networks import ErrorEstimationNet, InterpolationNet
+from support.networks import ErrorEstimationNet, InterpolationNet, InterpolationNet2
 from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
 from support.losses import RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
@@ -49,10 +49,10 @@ from train_kpcn import logging, logging_training
 BS_VAL = 4
 
 PRE_MODEL_FN = {
-                    'dncnn_G': 'weights_full/KPCN_full.pth',
-                    'dncnn_P': 'weights_full_2/KPCN_manif_p12_nogbuf_full_2.pth',
-                    'backbone_diffuse': 'weights_full_2/KPCN_manif_p12_nogbuf_full_2.pth',
-                    'backbone_specular': 'weights_full_2/KPCN_manif_p12_nogbuf_full_2.pth',
+                    'dncnn_G': 'weights_full_3/KPCN_full_3.pth',
+                    'dncnn_P': 'weights_full_3/KPCN_manif_p12_nogbuf_full_3.pth',
+                    'backbone_diffuse': 'weights_full_3/KPCN_manif_p12_nogbuf_full_3.pth',
+                    'backbone_specular': 'weights_full_3/KPCN_manif_p12_nogbuf_full_3.pth',
                 }
 
 def logging(writer, epoch, s, split, relL2, best_relL2):
@@ -72,12 +72,12 @@ def train_epoch_kpcn(epoch, interfaces, dataloaders, params, args):
     for itf in interfaces:
         itf.to_train_mode()
 
-    if epoch < 2:
-        itf.weight = 1.0
-    elif epoch < 4:
-        itf.weight = 0.5
-    else:
-        itf.weight = 0.0
+    # if epoch < 2:
+    #     itf.weight = 1.0
+    # elif epoch < 4:
+    #     itf.weight = 0.5
+    # else:
+    #     itf.weight = 0.0
     
 
     for batch in tqdm(dataloaders['train'], leave=False, ncols=70):
@@ -168,7 +168,7 @@ def train(interfaces, dataloaders, params, args):
                 state_dict['state_dict_' + model_name] = itf.models[model_name].state_dict()
 
             if not args.not_save:
-                torch.save(state_dict, os.path.join(args.save, 'latest_' + save_fn))
+                torch.save(state_dict, os.path.join(args.save, 'e{}_'.format(str(epoch)) + save_fn))
 
         # Validate models
         if (epoch % args.val_epoch == args.val_epoch - 1):
@@ -282,29 +282,27 @@ def init_model(dataset, args, rank=0):
         if args.train_branches:
             print('Train diffuse and specular branches indenpendently.')
         else:
-            print('Post-train two branches of KPCN.')
+            print('Train both branches with final radiance and single ensemble stream.')
         g_in = dataset['train'].dncnn_in_size
         if args.use_llpm_buf:
             if args.disentangle in ['m10r01', 'm11r01']:
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size // 2
             else:
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size
-            if args.manif_learn:
-                n_in = dataset['train'].pnet_in_size
-                n_out = pnet_out_size
-                models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
-                models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
-                p_in = 10 + n_out + 1 + 1 #23
-            else:
-                p_in = 46 + 1
+            # if args.manif_learn:
+            n_in = dataset['train'].pnet_in_size
+            n_out = pnet_out_size
+            models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
+            models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
+            p_in = 10 + n_out + 1 + 1 #23
+            # else:
+            #     p_in = 46 + 1
             # two stream denoisers
             models['dncnn_G'] = KPCN(34)
-            # if args.load: p_in = 23
-            p_in = 23
+            p_in = 23 # image 10 + pbuffer 12 + pvar 1
             models['dncnn_P'] = KPCN(p_in)
             # error estimation
-            n_in = 34 + p_in - 20 + 3 + 4 # 24 + 13 + 3
-            # if args.load: n_in += 1
+            n_in = (34 + p_in - 20) + 3 + 3 + 1 # all buffers + denoised image + noisy image + variance
             if args.error:
                 n_in += 1
                 print('error :', args.error, n_in)
@@ -315,11 +313,18 @@ def init_model(dataset, args, rank=0):
                 n_in = 8
             else:
                 if args.feature:
-                    n_in = 34 + p_in - 20 + 6
+                    # n_in = 34 + p_in - 20 + 6
+                    # n_in = 34 - 10 + 6
+                    n_in = p_in - 10 + 6
                 else:
                     n_in = 6
-            models['interpolate_diffuse'] = InterpolationNet(n_in)
-            models['interpolate_specular'] = InterpolationNet(n_in)
+            if args.ensemble_branches:
+                models['interpolate_diffuse'] = InterpolationNet(n_in, model_type=args.model_type)
+                models['interpolate_specular'] = InterpolationNet(n_in, model_type=args.model_type)
+                # models['interpolate_diffuse'] = InterpolationNet2(n_in, model_type=args.model_type)
+                # models['interpolate_specular'] = InterpolationNet2(n_in, model_type=args.model_type)
+            else:
+                models['interpolate'] = InterpolationNet(n_in, model_type=args.model_type)
             
         else:
             assert('should use llpm')
@@ -331,7 +336,7 @@ def init_model(dataset, args, rank=0):
             model_fn = os.path.join(args.save, '%s_lp%f_pos%d_wgt%f.pth'%(args.model_name, lr_pnet, pnet_out_size, w_manif))
         assert args.start_epoch != 0 or not os.path.isfile(model_fn), 'Model %s already exists.'%(model_fn)
         is_pretrained = ((args.start_epoch != 0) and os.path.isfile(model_fn)) or args.load
-        
+        # print('is pretrained', args.start_epoch != 0, os.path.isfile(model_fn), args.load)
         if is_pretrained:
             # loading pretrained weight
             if args.load:
@@ -404,12 +409,6 @@ def init_model(dataset, args, rank=0):
         
         # Initialize optimizers
         optims = {}
-        PRE_MODEL_FN = {
-                    'dncnn_G': 'weights_full/KPCN_full.pth',
-                    'dncnn_P': 'weights_full_2/KPCN_manif_p12_nogbuf_full_2.pth',
-                    'backbone_diffuse': 'weights_full_2/KPCN_manif_p12_nogbuf_full_2.pth',
-                    'backbone_specular': 'weights_full_2/KPCN_manif_p12_nogbuf_full_2.pth',
-                }
         for model_name in models:
             if 'dncnn' in model_name:
                 lr = args.lr_dncnn
@@ -423,6 +422,7 @@ def init_model(dataset, args, rank=0):
             print('optim for', model_name, lr)
             if not is_pretrained or 'error' in model_name or 'interpolate' in model_name:
             # if not is_pretrained:
+                # print('continue!')
                 continue
             
             if not args.load:
@@ -447,15 +447,18 @@ def init_model(dataset, args, rank=0):
                         print('No state for the optimizer for %s, use the initial optimizer and learning rate.'%(model_name))
                         continue
 
-
+            print('use ckpt', args.lr_ckpt)
             if not args.lr_ckpt:
                 print('Set the new learning rate %.3e for %s.'%(lr, model_name))
+                # print('only interpolate')
+                # if 'interp' in model_name:
+                #     state['param_groups'][0]['lr'] = lr
                 state['param_groups'][0]['lr'] = lr
             else:
                 print('Use the checkpoint (%s) learning rate for %s.'%(model_fn, model_name))
                 # [print(p.size()) for p in state['param_groups']]
                 # [print(p.size()) for p in optims['optim_' + model_name].state_dict()['param_groups']]
-            # print(model_name)
+            print('load', model_name)
             optims['optim_' + model_name].load_state_dict(state)
 
             # to remove error https://github.com/pytorch/pytorch/issues/80809
@@ -489,7 +492,7 @@ def init_model(dataset, args, rank=0):
             itf = ErrorEnsembleKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn)
         elif args.interpolate:
             itf = EnsembleKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn)
-        if is_pretrained:
+        if is_pretrained and not args.load:
             # TODO: needs change in automatically updating best_err
             print('Use the checkpoint best error %.3e'%(args.best_err))
             itf.best_err = args.best_err 
@@ -719,9 +722,9 @@ if __name__ == "__main__":
     parser.add_argument('--lr_inet', type=float, nargs='+', default=[0.0001], 
                         help='learning rate of InterpolationNet.')
     # parser.add_argument('--strided_down', action='store_true')
-    parser.add_argument('--weight', type=str, default='sigmoid', 
-                        help='activation to calculate normalized ensemble weight')
-    parser.add_argument('--model_type', type=str, default='unet',
+    # parser.add_argument('--weight', type=str, default='sigmoid', 
+    #                     help='activation to calculate normalized ensemble weight')
+    parser.add_argument('--model_type', type=str, default='conv5',
                         help='model type for interpolation weight')
     parser.add_argument('--interpolate', action='store_true',
                         help='train to reconstruct interpolated result')
@@ -731,6 +734,12 @@ if __name__ == "__main__":
                         help='fix the denoisers when training')
     parser.add_argument('--feature', action='store_true', 
                         help='feed features to InterpolationNet')
+    parser.add_argument('--weight', type=int, default=0,
+                        help='weight of full training denoisers')
+    parser.add_argument('--schedule', type=float, nargs='+', default=[1.0, 0.5, 0.25, 0])
+    parser.add_argument('--ensemble_branches', action='store_true')
+
+
     parser.add_argument('--error', action='store_true',
                         help='train with error estimation module')
     parser.add_argument('--lr_enet', type=float, nargs='+', default=[0.0001], 

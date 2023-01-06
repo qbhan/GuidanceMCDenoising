@@ -59,15 +59,18 @@ def LinearToSrgb(c):
 def ToneMapBatch(c):
     # originally for numpy
     # c: (B, C=3, W, H)
-    luminance = 0.2126 * c[:,0,:,:] + 0.7152 * c[:,1,:,:] + 0.0722 * c[:,2,:,:]
-    # col = c.copy()
-    col = c.clone()
-    col[:,0,:,:] /= (1 + luminance / 1.5)
-    col[:,1,:,:] /= (1 + luminance / 1.5)
-    col[:,2,:,:] /= (1 + luminance / 1.5)
-    col = torch.clip(col, 0, None)
+    # luminance = 0.2126 * c[:,0,:,:] + 0.7152 * c[:,1,:,:] + 0.0722 * c[:,2,:,:]
+    # # col = c.copy()
+    # col = c.clone()
+    # col[:,0,:,:] /= (1 + luminance / 1.5)
+    # col[:,1,:,:] /= (1 + luminance / 1.5)
+    # col[:,2,:,:] /= (1 + luminance / 1.5)
+    # col = torch.clip(col, 0, None)
     kInvGamma = 1.0 / 2.2
-    return torch.clip(col ** kInvGamma, 0.0, 1.0)
+    col = torch.clamp(c, min=0)
+    col = col / (1 + col)
+    # return torch.clip(col ** kInvGamma, 0.0, 1.0)
+    return col ** kInvGamma
 
 
 class BasicArgumentParser(argparse.ArgumentParser):

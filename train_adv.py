@@ -26,15 +26,8 @@ from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
 from support.losses import RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
 from support.interfaces import AdvKPCNInterface, NewAdvKPCNInterface, NewAdvKPCNInterface1, NewAdvKPCNInterface2
-from train_kpcn import validate_kpcn, train, train_epoch_kpcn
+# from train_kpcn import validate_kpcn, train, train_epoch_kpcn
 
-# Gharbi et al. dependency
-sys.path.insert(1, configs.PATH_SBMC)
-# try:
-#     from sbmc import KPCN
-# except ImportError as error:
-#     print('Put appropriate paths in the configs.py file.')
-#     raise
 
 # for multi_gpu and amp support from KISTI
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -47,66 +40,31 @@ from tensorboardX import SummaryWriter
 from train_kpcn import logging, logging_training
 
 BS_VAL = 4
-# def setup_logger():
-#     # create logger
-#     logger = logging.getLogger(__package__)
-#     # logger.setLevel(logging.DEBUG)
-#     logger.setLevel(logging.INFO)
-
-#     # create console handler and set level to debug
-#     ch = logging.StreamHandler()
-#     ch.setLevel(logging.DEBUG)
-
-#     # create formatter
-#     formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
-
-#     # add formatter to ch
-#     ch.setFormatter(formatter)
-
-#     # add ch to logger
-#     logger.addHandler(ch)
-
 
 def init_data(args):
-    # Initialize datasets
+    '''
+    Initialize dataset.
+    AdvMCD use the same dataset with KPCN for diffuse & specular branch
+    '''
     datasets = {}
-    if 'full' in args.desc:
-        print('load full dataset')
-        datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-            use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
-        datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-            use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
-    else:
-        print('load 8spp dataset')
-        datasets['train'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-             use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
-        datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-             use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+    datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
+        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+    datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
+        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
 
-    if args.distributed:
-        train_sampler = DistributedSampler(datasets['train'], shuffle=False)
-        val_sampler = DistributedSampler(datasets['val'], shuffle=False)
-    else:
-        train_sampler = None
-        val_sampler = None
-    
-    # Initialize dataloaders
     dataloaders = {}
-    if args.distributed: num_workers = 1# torch.cuda.device_count()
-    else: num_workers = 1
+
     dataloaders['train'] = DataLoader(
         datasets['train'], 
         batch_size=args.batch_size,
-        num_workers=num_workers,
+        num_workers=1,
         pin_memory=True,
-        sampler=train_sampler
     )
     dataloaders['val'] = DataLoader(
         datasets['val'],
         batch_size=BS_VAL,
-        num_workers=num_workers,
+        num_workers=1,
         pin_memory=True,
-        sampler=val_sampler
     )
     return datasets, dataloaders
 
@@ -123,65 +81,23 @@ def init_model(dataset, args, rank=0):
     for lr_pnet, pnet_out_size, w_manif in list(itertools.product(*tmp)):
         # Initialize models (NOTE: modified for each model) 
         models = {}
-        if args.train_branches:
-            print('Train diffuse and specular branches indenpendently.')
-        else:
-            print('Post-train two branches of KPCN.')
-            
         if args.use_llpm_buf:
             if args.disentangle in ['m10r01', 'm11r01']:
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size // 2
             else:
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size
-            print('adv', n_in, pnet_out_size)
             if not args.use_single:
                 print('adv type', args.type)
                 # print(args.type == 'new_adv_1')
-                if args.type == 'new_adv_1':
-                    if args.manif_learn:
-                        n_in = dataset['train'].pnet_in_size
-                        n_out = pnet_out_size
-                        models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
-                        models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
-                        p_in = 10 + n_out + 1 #23
-                    else:
-                        p_in = 46
-                    models['dncnn'] = NewAdvKPCN_1(35, p_in, gen_activation=args.activation, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down, interpolation=args.interpolation, revise=args.revise, weight=args.weight)
-                elif args.type == 'new_adv_2':
-                    if args.manif_learn:
-                        n_in = dataset['train'].pnet_in_size
-                        n_out = pnet_out_size
-                        models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
-                        models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
-                        p_in = 10 + n_out + 1 #23
-                    else:
-                        p_in = 47
-                    models['dncnn'] = NewAdvKPCN_2(35, p_in, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down, interpolation=args.interpolation)
-                else:
-                    models['dncnn'] = AdvKPCN(n_in, pnet_out=pnet_out_size)
-                    print('Initialize AdvKPCN for path descriptors (# of input channels: %d).'%(n_in))
+                if args.manif_learn:
                     n_in = dataset['train'].pnet_in_size
                     n_out = pnet_out_size
                     models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
                     models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
-                    # models['KPN'] = KPN(ic=50)
-            else:
-                if not args.separate:
-                    if args.manif_learn:
-                        n_out = pnet_out_size
-                        models['backbone'] = PathNet(ic=n_in, outc=n_out)
-                        p_in = 20 + n_out + 1 #33
-                    else:
-                        p_in = 56
-                    print("NewAdvKPCN_2 with gen activation:", args.activation, ", gen output type", args.output_type, "and disc activation", args.disc_activation)
-                    # models['dncnn'] = NewAdvKPCN_2(45, 56, gen_activation=args.activation, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down, use_krn=args.use_krn)
-                    models['dncnn'] = NewAdvKPCN_2(45, p_in, gen_activation=args.activation, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down, use_krn=args.use_krn)
+                    p_in = 10 + n_out + 1 #23
                 else:
-                    print("separate and single with gen activation:", args.activation, ", gen output type", args.output_type, "and disc activation", args.disc_activation)
-                    models['dncnn'] = ModKPCN(45, 56, activation=args.activation, output_type=args.output_type)
-                    models['dis'] = PixelDiscriminator(64, 1, strided_down=args.strided_down, activation=args.disc_activation)
-                    print("dncnn", models['dncnn'])
-                    print("dis", models['dis'])
+                    p_in = 46
+                models['dncnn'] = NewAdvKPCN_1(35, p_in, disc_activtion=args.disc_activation, output_type=args.output_type, strided_down=args.strided_down, interpolation=args.interpolation, revise=args.revise, weight=args.weight, model_type=args.model_type)
                 print('Initialize AdvKPCN for path descriptors (# of input channels: %d).'%(n_in))
         else:
             n_in = dataset['train'].dncnn_in_size
@@ -352,150 +268,6 @@ def init_model(dataset, args, rank=0):
 
     return interfaces, params
 
-
-def ddp_train(rank, args):
-    # set up multi-processing
-    torch.distributed.init_process_group("gloo", rank=rank, world_size=4) # world_size: numboer of processes
-    # logger = logging.getLogger(__package__)
-    # setup_logger()
-    torch.cuda.set_device(rank)
-    dataset, dataloaders = init_data(args)
-    interfaces, params = init_model(dataset, args, rank)
-    assert len(interfaces) > 1 or len(params) > 1
-
-    ##### important!!!
-    # make sure different processes sample different patches
-    # np.random.seed((rank + 1) * 777)
-    # random.seed((rank+1) * 777)
-    # make sure different processes have different perturbations
-    # torch.manual_seed((rank + 1) * 777)
-
-    # only main process should log
-    if rank == 0:
-        writer = SummaryWriter(os.path.join(args.summary, args.desc))
-    
-    for epoch in range(args.start_epoch, args.num_epoch):
-        if len(interfaces) == 1:
-            save_fn = args.model_name + '.pth'
-        else:
-            raise NotImplementedError('Multiple interfaces')
-
-        start_time = time.time()
-
-        # train
-        for itf in interfaces:
-            itf.to_train_mode()
-        for i, batch in enumerate(dataloaders['train']):
-            # Transfer data from the cpu to gpu memory
-            for k in batch:
-                if not batch[k].__class__ == torch.Tensor:
-                    continue
-                batch[k] = batch[k].cuda()
-
-
-            # Main
-            for itf in interfaces:
-                itf.preprocess(batch, args.use_single)
-                itf.train_batch(batch)
-        
-        summaries = []
-        if not args.visual:
-            for itf in interfaces:
-                summaries.append(itf.get_epoch_summary(mode='train', norm=len(dataloaders['train'])))
-
-        itf.epoch += 1
-        itf.cnt = 0
-        
-        # only main process should log
-        if rank == 0:
-            logging_training(writer, epoch, 0, 1, summaries)
-            print('[][] Elapsed time for one epoch: %d'%(time.time() - start_time))
-
-
-        # save best model only on the main process
-        if rank == 0:
-            for i, itf in enumerate(interfaces):
-                tmp_params = params.copy()
-                tmp_params['vis'] = None
-
-                state_dict = {
-                    'description': args.desc, #
-                    'start_epoch': epoch + 1,
-                    'model': str(itf.models['dncnn']),
-                    'params': tmp_params,
-                    'optims': itf.optims,
-                    'args': args,
-                    'best_err': itf.best_err
-                }
-
-                for model_name in itf.models:
-                    state_dict['state_dict_' + model_name] = itf.models[model_name].state_dict()
-
-                if not args.not_save:
-                    torch.save(state_dict, os.path.join(args.save, 'latest_' + save_fn))
-
-        # validate
-        if (epoch % args.val_epoch == args.val_epoch - 1):
-            if rank == 0:
-                print('[][] Validation')
-            # summaries = validate_kpcn(epoch, interfaces, dataloaders, params, 0, args)
-            print('[][] Validation (epoch %d split %d)' % (epoch, 0))
-            for itf in interfaces:
-                itf.to_eval_mode()
-
-            summaries = []
-            with torch.no_grad():
-                for batch in tqdm(dataloaders['val'], leave=False, ncols=70):
-                    # Transfer data from the cpu to gpu memory
-                    for k in batch:
-                        if not batch[k].__class__ == torch.Tensor:
-                            continue
-                        batch[k] = batch[k].cuda()
-
-                    # Main
-                    for itf in interfaces:
-                        itf.validate_batch(batch)
-
-            for itr in interfaces:
-                summaries.append(itf.get_epoch_summary(mode='eval', norm=len(dataloaders['val'])))
-
-            # save best model only on the main process
-            if rank == 0:
-                for i, itf in enumerate(interfaces):
-                    if summaries[i] < itf.best_err:
-                        itf.best_err = summaries[i]
-
-                        tmp_params = params.copy()
-                        tmp_params['vis'] = None
-
-                        state_dict = {
-                            'description': args.desc, #
-                            'start_epoch': epoch + 1,
-                            'model': str(itf.models['dncnn']),
-                            'params': tmp_params,
-                            'optims': itf.optims,
-                            'args': args,
-                            'best_err': itf.best_err
-                        }
-
-                        for model_name in itf.models:
-                            state_dict['state_dict_' + model_name] = itf.models[model_name].state_dict()
-
-                        if not args.not_save:
-                            torch.save(state_dict, os.path.join(args.save, save_fn))
-                            print('[][] Model %s saved at epoch %d.'%(save_fn, epoch))
-
-                    print('[][] Model {} RelMSE: {:.3f}e-3 \t Best RelMSE: {:.3f}e-3'.format(save_fn, summaries[i]*1000, itf.best_err*1000))
-                    logging(writer, epoch, 0, 1, summaries[i], itf.best_err)
-
-        # # Update schedulers
-        for key in params:
-            if 'sched_' in key:
-                params[key].step()
-
-    torch.distributed.destroy_process_group()
-
-
 def main(args):
     # Set random seeds
     random.seed("Inyoung Cho, Yuchi Huo, Sungeui Yoon @ KAIST")
@@ -613,6 +385,7 @@ if __name__ == "__main__":
     parser.add_argument('--error_type', type=str, default='L1')
     parser.add_argument('--interpolation', type=str, default='kernel')
     parser.add_argument('--weight', type=str, default='sigmoid')
+    parser.add_argument('--model_type', type=str, default='unet')
     
     
     args = parser.parse_args()

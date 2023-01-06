@@ -2,18 +2,20 @@ python train_kpcn.py \
     --single_gpu \
     --batch_size 8 \
     --val_epoch 1 \
-    --data_dir /mnt/ssd2/kbhan/KPCN \
-    --model_name KPCN_manif_p12 \
-    --desc "KPCN_manif_p12" \
-    --num_epoch 10 \
-    --lr_dncnn 1e-4 \
+    --data_dir /home/kyubeom/ssd1/KPCN \
+    --model_name KPCN_manif_full_3 \
+    --desc "KPCN_manif_full_3" \
+    --num_epoch 15 \
+    --lr_dncnn 1e-6 \
     --manif_loss FMSE \
     --pnet_out_size 12 \
-    --lr_pnet 1e-4 \
+    --lr_pnet 1e-6 \
     --use_llpm_buf \
     --manif_learn \
     --w_manif 0.1 \
     --device_id 2 \
-    --save 'weights_ens_8' \
-    --summary 'summary_ens_8' \
-    --train_branches
+    --save 'weights_full_3' \
+    --summary 'summary_full_3' \
+    --train_branches \
+    --start_epoch 8 \
+    --best_err 1.866e-3

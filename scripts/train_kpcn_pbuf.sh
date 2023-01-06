@@ -2,7 +2,7 @@ python train_kpcn.py \
     --single_gpu \
     --batch_size 8 \
     --val_epoch 1 \
-    --data_dir /mnt/ssd1/iycho/KPCN \
+    --data_dir /mnt/ssd2/kbhan/KPCN \
     --model_name KPCN_pbuf \
     --desc "KPCN_pbuf" \
     --num_epoch 10 \
@@ -10,4 +10,4 @@ python train_kpcn.py \
     --train_branches \
     --use_llpm_buf \
     --no_p_model \
-    --device_id 0
+    --device_id 3

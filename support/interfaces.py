@@ -27,20 +27,38 @@ except ImportError as error:
 
 from support.utils import ToneMapBatch
 
-def score_map(img, tgt, error_type='L1'):
+def score_map(img, tgt, error_type='L1', Tonemapping=False):
     # with torch.no_grad():
     #     score = torch.clip(torch.abs((ToneMapBatch(img) - ToneMapBatch(tgt))), 0.0, 1.0)
     #     return score
+    eps = 0.000001
+    # print('score type', error_type)
+    if Tonemapping:
+        img, tgt = ToneMapBatch(img), ToneMapBatch(tgt)
     if error_type == 'L1':
-        score = torch.abs((ToneMapBatch(img) - ToneMapBatch(tgt))).mean(dim=1)
+        score = torch.abs((img - tgt)).mean(dim=1)
     elif error_type == 'MSE':
         # print(img.shape, tgt.shape)
-        score = torch.square((ToneMapBatch(img) - ToneMapBatch(tgt))).mean(dim=1)
+        score = torch.square((img - tgt)).mean(dim=1)
+    elif error_type == 'relMSE':
+        mse = torch.square((img - tgt))
+        score = mse / (torch.square(tgt) + eps)
+        score = score.mean(1)
+    elif error_type == 'relL1':
+        l1 = torch.abs((img - tgt))
+        score = l1 / (torch.abs(tgt) + eps)
+        score = score.mean(1)
+    elif error_type == 'SMAPE':
+        score = (torch.abs((img - tgt))) / (
+            eps + torch.abs(img) + torch.abs(tgt)
+        )
+        score = score.mean(1)
         # print(score.shape)
-    score = torch.clip(score, 0.0, 1.0)
+    score = torch.clip(score, 0.0, None) 
     # score = torch.nn.
     score = score.unsqueeze(1)
     return score.detach()
+
 
   
 
@@ -373,7 +391,7 @@ class KPCNInterface(BaseInterface):
         self.m_losses['m_val'] = torch.tensor(0.0)
         self.m_losses['m_gbuf_val'] = torch.tensor(0.0)
 
-    def validate_batch(self, batch, vis=None):
+    def validate_batch(self, batch, mode=None):
         p_buffers = None
 
         if self.use_llpm_buf:
@@ -589,7 +607,7 @@ class AdvKPCNInterface(BaseInterface):
         }
         return p_buffers
 
-    def _regress_forward(self, batch, vis=False):
+    def _regress_forward(self, batch, mode=False):
         # print(next(self.models['dncnn'].parameters()).device)
         return self.models['dncnn'](batch, vis)
 
@@ -695,7 +713,7 @@ class AdvKPCNInterface(BaseInterface):
         self.m_losses['m_val'] = torch.tensor(0.0)
         self.m_losses['m_gbuf_val'] = torch.tensor(0.0)
 
-    def validate_batch(self, batch, vis=False):
+    def validate_batch(self, batch, mode=False):
         p_buffers = None
 
         if self.use_llpm_buf:
@@ -857,7 +875,7 @@ class NewAdvKPCNInterface(BaseInterface):
             loss_dict = self._train_gan(batch, False)
 
 
-    def _train_gan(self, batch, vis=False):
+    def _train_gan(self, batch, mode=False):
         loss_dict = {}
         real_target = torch.tensor([1.0]).cuda()
         fake_target = torch.tensor([0.0]).cuda()
@@ -933,7 +951,7 @@ class NewAdvKPCNInterface(BaseInterface):
         p_buffer = self.models['backbone'](batch)
         return p_buffer
 
-    def _regress_forward(self, batch, vis=False, separate=False):
+    def _regress_forward(self, batch, mode=False, separate=False):
         # print(next(self.models['dncnn'].parameters()).device)
         # print('_regress_forward', separate)
         if not separate:
@@ -1032,7 +1050,7 @@ class NewAdvKPCNInterface(BaseInterface):
         self.m_losses['m_val'] = torch.tensor(0.0)
         self.m_losses['m_gbuf_val'] = torch.tensor(0.0)
 
-    def validate_batch(self, batch, vis=False):
+    def validate_batch(self, batch, mode=False):
         p_buffers = None
 
         out = self._regress_forward(batch, vis, self.separate)
@@ -1243,7 +1261,7 @@ class NewAdvKPCNInterface1(BaseInterface):
         }
         return p_buffers
 
-    def _regress_forward(self, batch, vis=False, separate=False):
+    def _regress_forward(self, batch, mode=False, separate=False):
         # print(next(self.models['dncnn'].parameters()).device)
         # print('_regress_forward', separate)
         if not separate:
@@ -1421,7 +1439,7 @@ class NewAdvKPCNInterface1(BaseInterface):
         self.m_losses['m_val'] = torch.tensor(0.0)
         self.m_losses['m_gbuf_val'] = torch.tensor(0.0)
 
-    def validate_batch(self, batch, vis=False):
+    def validate_batch(self, batch, mode=False):
         p_buffers = None
         if self.manif_learn:
             p_buffers = self._manifold_forward(batch)
@@ -1707,9 +1725,6 @@ class NewAdvKPCNInterface2(BaseInterface):
         final_radiance, g_radiance, p_radiance = out['radiance'], out['g_radiance'], out['p_radiance']
         final_diffuse, g_diffuse, p_diffuse = out['diffuse'], out['g_diffuse'], out['p_diffuse']
         final_specular, g_specular, p_specular = out['specular'], out['g_specular'], out['p_specular']
-        gt_diff_score, gt_spec_score = out['s_diffuse'], out['s_specular']
-        g_diff_score, g_spec_score = out['s_g_diffuse'], out['s_g_specular']
-        p_diff_score, p_spec_score = out['s_p_diffuse'], out['s_p_specular']
         loss_dict = {}
         tgt_diffuse = crop_like(batch['target_diffuse'], final_radiance)
         tgt_specular = crop_like(batch['target_specular'], final_radiance)
@@ -1737,6 +1752,9 @@ class NewAdvKPCNInterface2(BaseInterface):
 
         # print(self.use_adv)
         if self.use_adv:
+            gt_diff_score, gt_spec_score = out['s_diffuse'], out['s_specular']
+            g_diff_score, g_spec_score = out['s_g_diffuse'], out['s_g_specular']
+            p_diff_score, p_spec_score = out['s_p_diffuse'], out['s_p_specular']
             L_g_diff_adv = self.loss_funcs['l_adv'](g_diff_score, torch.zeros_like(g_diff_score))
             L_p_diff_adv = self.loss_funcs['l_adv'](p_diff_score, torch.zeros_like(p_diff_score))
             L_g_spec_adv = self.loss_funcs['l_adv'](g_spec_score, torch.zeros_like(g_spec_score))
@@ -1796,9 +1814,6 @@ class NewAdvKPCNInterface2(BaseInterface):
         del final_radiance, g_radiance, p_radiance
         del final_diffuse, g_diffuse, p_diffuse
         del final_specular, g_specular, p_specular
-        del gt_diff_score, gt_spec_score
-        del g_diff_score, g_spec_score
-        del p_diff_score, p_spec_score
         del tgt_diffuse, tgt_specular, tgt_total
 
         return loss_dict
@@ -1829,7 +1844,7 @@ class NewAdvKPCNInterface2(BaseInterface):
         self.m_losses['m_val'] = torch.tensor(0.0)
         self.m_losses['m_gbuf_val'] = torch.tensor(0.0)
 
-    def validate_batch(self, batch, vis=False):
+    def validate_batch(self, batch, mode=False):
         p_buffers = None
         if self.manif_learn:
             p_buffers = self._manifold_forward(batch)
@@ -2059,7 +2074,7 @@ class SingleStreamAdvKPCNInterface(BaseInterface):
         """
         return self.models['backbone'](batch)
 
-    def _regress_forward(self, batch, vis=False):
+    def _regress_forward(self, batch, mode=False):
         """
             process the given batch with KPCN
         """
@@ -2169,7 +2184,7 @@ class SingleStreamAdvKPCNInterface(BaseInterface):
         self.m_losses['m_val'] = torch.tensor(0.0)
         self.m_losses['m_gbuf_val'] = torch.tensor(0.0)
 
-    def validate_batch(self, batch, vis=False):
+    def validate_batch(self, batch, mode=False):
         """
             validate SingleStreamAdvKPCNInterface with the given batch
         """
@@ -2396,7 +2411,7 @@ class SBMCInterface(BaseInterface):
             self.models[model_name].eval()
         self.m_losses['m_val'] = torch.tensor(0.0)
     
-    def validate_batch(self, batch, vis=False):
+    def validate_batch(self, batch, mode=False):
         p_buffer = None
 
         if self.use_llpm_buf:
@@ -2799,7 +2814,8 @@ class LBMCInterface(SBMCInterface):
 
         self._logging(loss_dict)
 
-        self._optimization()
+        if not self.amp:
+            self._optimization()
     
     def _logging(self, loss_dict):
         """ error handling """
@@ -2822,3 +2838,2077 @@ class LBMCInterface(SBMCInterface):
             if 'm_' + key not in self.m_losses:
                 self.m_losses['m_' + key] = torch.tensor(0.0, device=loss_dict[key].device)
             self.m_losses['m_' + key] += loss_dict[key]
+
+
+class ErrorInterface(BaseInterface):
+
+    def __init__(self, models, optims, loss_funcs, args, visual=False, use_llpm_buf=False, manif_learn=False, w_manif=0.1, train_branches=True, disentanglement_option="m11r11", use_skip=False, use_pretrain=False, apply_loss_twice=False, error_type='L1'):
+        if manif_learn:
+            assert 'backbone_diffuse' in models, "argument `models` dictionary should contain `'backbone_diffuse'` key."
+            assert 'backbone_specular' in models, "argument `models` dictionary should contain `'backbone_specular'` key."
+        assert 'dncnn' in models, "argument `models` dictionary should contain `'dncnn'` key."
+        if train_branches:
+            assert 'l_diffuse' in loss_funcs
+            assert 'l_specular' in loss_funcs
+        if manif_learn:
+            assert 'l_manif' in loss_funcs
+        assert 'l_recon' in loss_funcs
+        assert 'l_test' in loss_funcs
+        assert disentanglement_option in ['m11r11', 'm10r01', 'm11r01', 'm10r11']
+        
+        super(ErrorInterface, self).__init__(models, optims, loss_funcs, args, visual, use_llpm_buf, manif_learn, w_manif)
+        self.train_branches = train_branches
+        self.disentanglement_option = disentanglement_option
+        self.use_skip = use_skip
+        self.use_pretrain = use_pretrain
+        self.apply_loss_twice = apply_loss_twice
+        self.cnt = 0
+        self.epoch = 0
+        self.no_p_model = args.no_p_model
+        self.no_gbuf = args.no_gbuf
+        self.error_type = error_type
+        self.best_err = 1e10, 1e10
+
+    def __str__(self):
+        return 'KPCNInterface'
+
+    def to_train_mode(self):
+        for model_name in self.models:
+            if 'error' in model_name:
+                self.models[model_name].train()
+            else:
+                self.models[model_name].eval()
+            if 'error' in model_name:
+                assert 'optim_' + model_name in self.optims, '`optim_%s`: an optimization algorithm is not defined.'%(model_name)
+    
+    def preprocess(self, batch=None, use_single=False):
+        assert 'target_total' in batch
+        assert 'target_diffuse' in batch
+        assert 'target_specular' in batch
+        assert 'kpcn_diffuse_in' in batch
+        assert 'kpcn_specular_in' in batch
+        assert 'kpcn_diffuse_buffer' in batch
+        assert 'kpcn_specular_buffer' in batch
+        assert 'kpcn_albedo' in batch
+        if self.use_llpm_buf:
+            assert 'paths' in batch
+
+        self.iters += 1
+    
+    def train_batch(self, batch, grad_hook_mode=False):
+        out_manif = None
+        if self.use_llpm_buf:
+            self.models['backbone_diffuse'].zero_grad()
+            self.models['backbone_specular'].zero_grad()
+            p_buffers = self._manifold_forward(batch)
+
+            # if self.iters % 1000 == 1:
+            #     pimg = np.mean(np.transpose(p_buffers['diffuse'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
+            #     pimg = np.clip(pimg, 0.0, 1.0)
+            #     plt.imsave('../LLPM_results/pbuf_%s_diffuse.png'%(self.args.model_name), pimg)
+
+            #     pimg = np.mean(np.transpose(p_buffers['specular'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
+            #     pimg = np.clip(pimg, 0.0, 1.0)
+            #     plt.imsave('../LLPM_results/pbuf_%s_specular.png'%(self.args.model_name), pimg)
+            
+            """ Feature disentanglement """
+            _, _, c, _, _ = p_buffers['diffuse'].shape
+            assert c >= 2
+            if self.disentanglement_option == 'm11r11':
+                out_manif = p_buffers
+            elif self.disentanglement_option == 'm10r01':
+                out_manif = {
+                        'diffuse': p_buffers['diffuse'][:,:,c//2:,...],
+                        'specular': p_buffers['specular'][:,:,c//2:,...]
+                }
+                p_buffers = {
+                        'diffuse': p_buffers['diffuse'][:,:,:c//2,...],
+                        'specular': p_buffers['specular'][:,:,:c//2,...]
+                }
+            elif self.disentanglement_option == 'm11r01':
+                out_manif = p_buffers
+                p_buffers = {
+                        'diffuse': p_buffers['diffuse'][:,:,:c//2,...],
+                        'specular': p_buffers['specular'][:,:,:c//2,...]
+                }
+            elif self.disentanglement_option == 'm10r11':
+                out_manif = {
+                        'diffuse': p_buffers['diffuse'][:,:,c//2:,...],
+                        'specular': p_buffers['specular'][:,:,c//2:,...]
+                }
+
+            p_var_diffuse = p_buffers['diffuse'].var(1).mean(1, keepdims=True).detach()
+            p_var_diffuse /= p_buffers['diffuse'].shape[1] # spp
+            p_var_specular = p_buffers['specular'].var(1).mean(1, keepdims=True).detach()
+            p_var_specular /= p_buffers['specular'].shape[1]
+
+            # make a new batch
+            if not self.no_gbuf:
+                batch = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                    'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'], p_buffers['specular'].mean(1), p_var_specular], 1),
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+                }
+            else:
+                batch = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'][:, :10], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                    'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'][:, :10], p_buffers['specular'].mean(1), p_var_specular], 1),
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+                }
+
+                # del p_buffer
+        self.models['dncnn'].zero_grad()
+        out = self._regress_forward(batch)
+        loss_dict = self._backward(batch, out, out_manif)
+
+        if grad_hook_mode: # do not update this model
+            return
+
+        self._logging(loss_dict)
+        del loss_dict
+        self._optimization()
+
+    def _manifold_forward(self, batch):
+        if not self.no_p_model:
+            p_buffer_diffuse = self.models['backbone_diffuse'](batch)
+            p_buffer_specular = self.models['backbone_specular'](batch)
+            p_buffers = {
+                'diffuse': p_buffer_diffuse,
+                'specular': p_buffer_specular
+            }
+        else:
+            p_buffers = {
+                'diffuse': batch['paths'],
+                'specular': batch['paths']
+            }
+        return p_buffers
+
+    def _regress_forward(self, batch):
+        return self.models['dncnn'](batch)
+
+    def _error_forward(self, batch, out):
+        # for key in out: print(key)
+        return self.models['error'](batch, out)
+
+    def _backward(self, batch, out, p_buffers, err=None):
+        # assert 'radiance' in out
+        assert 'diffuse' in out
+        assert 'specular' in out
+        # assert 'diffuse' in err
+        # assert 'specular' in err
+
+        diffuse, specular = out['diffuse'], out['specular']
+        loss_dict = {}
+        # tgt_total = crop_like(batch['target_total'], total)
+        tgt_diffuse = crop_like(batch['target_diffuse'], diffuse)
+        tgt_specular = crop_like(batch['target_specular'], specular)
+        in_diffuse = crop_like(batch['kpcn_diffuse_buffer'], diffuse)
+        in_specular = crop_like(batch['kpcn_specular_buffer'], specular)
+        with torch.no_grad():
+            # print(self.error_type)
+            gt_err_diff = score_map(in_diffuse, tgt_diffuse, error_type=self.error_type)
+            # print(gt_err_diff.shape, diffuse.shape)
+            gt_err_spec = score_map(in_specular, tgt_specular, error_type=self.error_type)
+        
+        L_diff_err = self.loss_funcs['l_adv'](diffuse, gt_err_diff)
+        L_spec_err = self.loss_funcs['l_adv'](specular, gt_err_spec)
+        loss_dict['L_diff_err'] = L_diff_err.detach()
+        loss_dict['L_spec_err'] = L_spec_err.detach()
+        L_diff_err.backward()
+        L_spec_err.backward()
+        
+        return loss_dict
+
+    def _logging(self, loss_dict):
+        """ error handling """
+        for key in loss_dict:
+            if not torch.isfinite(loss_dict[key]).all():
+                raise RuntimeError("%s: Non-finite loss at train time."%(key))
+        
+        # (NOTE: modified for each model)
+        for model_name in self.models:
+            nn.utils.clip_grad_value_(self.models[model_name].parameters(), clip_value=1.0)
+
+        """ logging """
+        for key in loss_dict:
+            if 'm_' + key not in self.m_losses:
+                self.m_losses['m_' + key] = torch.tensor(0.0, device=loss_dict[key].device)
+            self.m_losses['m_' + key] += loss_dict[key]
+    
+    def _optimization(self):
+        for model_name in self.models:
+            # if 'error' in model_name:
+            self.optims['optim_' + model_name].step()
+
+    def to_eval_mode(self):
+        for model_name in self.models:
+            self.models[model_name].eval()
+        self.m_losses['m_val_err_diff'] = torch.tensor(0.0)
+        self.m_losses['m_val_err_spec'] = torch.tensor(0.0)
+
+    def validate_batch(self, batch, mode=None):
+        p_buffers = None
+
+        if self.use_llpm_buf:
+            p_buffers = self._manifold_forward(batch)
+            
+            """ Feature disentanglement """
+            _, _, c, _, _ = p_buffers['diffuse'].shape
+            assert c >= 2
+            if self.disentanglement_option == 'm10r01' or self.disentanglement_option == 'm11r01':
+                p_buffers = {
+                        'diffuse': p_buffers['diffuse'][:,:,:c//2,...],
+                        'specular': p_buffers['specular'][:,:,:c//2,...]
+                }
+
+            p_var_diffuse = p_buffers['diffuse'].var(1).mean(1, keepdims=True).detach()
+            p_var_diffuse /= p_buffers['diffuse'].shape[1] # spp
+            p_var_specular = p_buffers['specular'].var(1).mean(1, keepdims=True).detach()
+            p_var_specular /= p_buffers['specular'].shape[1]
+
+            # make a new batch
+            
+            batch = {
+                'target_total': batch['target_total'],
+                'target_diffuse': batch['target_diffuse'],
+                'target_specular': batch['target_specular'],
+                'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'][:, :10], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'][:, :10], p_buffers['specular'].mean(1), p_var_specular], 1),
+                'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                'kpcn_albedo': batch['kpcn_albedo'],
+            }
+        
+        out = self._regress_forward(batch)
+        diffuse, specular = out['diffuse'], out['specular']
+        rad_dict = {'diffuse': torch.ones_like(diffuse),
+                    'specular': torch.ones_like(specular)}
+        kernel_dict = {'diffuse': None,
+                      'specular': None}
+        
+        # tgt_total = crop_like(batch['target_total'], out['radiance'])
+        tgt_diffuse = crop_like(batch['target_diffuse'], diffuse)
+        tgt_specular = crop_like(batch['target_specular'], specular)
+        in_diffuse = crop_like(batch['kpcn_diffuse_buffer'], diffuse)
+        in_specular = crop_like(batch['kpcn_specular_buffer'], specular)
+        gt_err_diff = score_map(in_diffuse, tgt_diffuse, error_type = self.error_type)
+        gt_err_spec = score_map(in_specular, tgt_specular, error_type = self.error_type)
+        L_diff_err = self.loss_funcs['l_adv'](out['diffuse'], gt_err_diff)
+        L_spec_err = self.loss_funcs['l_adv'](out['specular'], gt_err_spec)
+
+        score_dict = {
+            's_diffuse': diffuse, 's_specular': specular,
+            's_gt_diffuse': gt_err_diff, 's_gt_specular': gt_err_spec
+        }
+
+        if self.m_losses['m_val_err_diff'] == 0.0 and self.m_losses['m_val_err_diff'].device != L_diff_err.device:
+            self.m_losses['m_val_err_diff'] = torch.tensor(0.0, device=L_diff_err.device)
+        # print(self.m_losses['m_val_err_diff'].device, L_diff_err.device)
+        self.m_losses['m_val_err_diff'] += L_diff_err.detach()
+        if self.m_losses['m_val_err_spec'] == 0.0 and self.m_losses['m_val_err_spec'].device != L_spec_err.device:
+            self.m_losses['m_val_err_spec'] = torch.tensor(0.0, device=L_spec_err.device)
+        self.m_losses['m_val_err_spec'] += L_spec_err.detach()
+        
+
+
+        return in_diffuse,  p_buffers, rad_dict, kernel_dict, score_dict
+
+    def get_epoch_summary(self, mode, norm):
+        if mode == 'train':
+            losses = {}
+            print('[][][]', end=' ')
+            for key in self.m_losses:
+                if 'm_val' in key:
+                    continue
+                tr_l_tmp = self.m_losses[key] / (norm * 2)
+                tr_l_tmp *= 1000
+                print('%s: %.3fE-3'%(key, tr_l_tmp), end='\t')
+                losses[key] = tr_l_tmp
+                self.m_losses[key] = torch.tensor(0.0, device=self.m_losses[key].device)
+            print('')
+            return losses #-1.0
+        else:
+            return self.m_losses['m_val_err_diff'].item() / (norm * 2), self.m_losses['m_val_err_spec'].item() / (norm * 2)
+
+class ErrorKPCNInterface(BaseInterface):
+
+    def __init__(self, models, optims, loss_funcs, args, visual=False, use_llpm_buf=False, manif_learn=False, w_manif=0.1, train_branches=True, disentanglement_option="m11r11", use_skip=False, use_pretrain=False, apply_loss_twice=False, error_type='L1'):
+        if manif_learn:
+            assert 'backbone_diffuse' in models, "argument `models` dictionary should contain `'backbone_diffuse'` key."
+            assert 'backbone_specular' in models, "argument `models` dictionary should contain `'backbone_specular'` key."
+        assert 'dncnn' in models, "argument `models` dictionary should contain `'dncnn'` key."
+        if train_branches:
+            assert 'l_diffuse' in loss_funcs
+            assert 'l_specular' in loss_funcs
+        if manif_learn:
+            assert 'l_manif' in loss_funcs
+        assert 'l_recon' in loss_funcs
+        assert 'l_test' in loss_funcs
+        assert disentanglement_option in ['m11r11', 'm10r01', 'm11r01', 'm10r11']
+        
+        super(ErrorKPCNInterface, self).__init__(models, optims, loss_funcs, args, visual, use_llpm_buf, manif_learn, w_manif)
+        self.train_branches = train_branches
+        self.disentanglement_option = disentanglement_option
+        self.use_skip = use_skip
+        self.use_pretrain = use_pretrain
+        self.apply_loss_twice = apply_loss_twice
+        self.cnt = 0
+        self.epoch = 0
+        self.no_p_model = args.no_p_model
+        self.no_gbuf = args.no_gbuf
+        self.error_type = error_type
+        self.best_err = 1e10, 1e10
+
+    def __str__(self):
+        return 'ErrorKPCNInterface'
+
+    def to_train_mode(self):
+        for model_name in self.models:
+            # if 'error' in model_name:
+            #     self.models[model_name].train()
+            # else:
+            #     self.models[model_name].eval()
+            # if 'error' in model_name:
+            #     assert 'optim_' + model_name in self.optims, '`optim_%s`: an optimization algorithm is not defined.'%(model_name)
+            self.models[model_name].train()
+            assert 'optim_' + model_name in self.optims, '`optim_%s`: an optimization algorithm is not defined.'%(model_name)
+    
+    def preprocess(self, batch=None, use_single=False):
+        assert 'target_total' in batch
+        assert 'target_diffuse' in batch
+        assert 'target_specular' in batch
+        assert 'kpcn_diffuse_in' in batch
+        assert 'kpcn_specular_in' in batch
+        assert 'kpcn_diffuse_buffer' in batch
+        assert 'kpcn_specular_buffer' in batch
+        assert 'kpcn_albedo' in batch
+        if self.use_llpm_buf:
+            assert 'paths' in batch
+
+        self.iters += 1
+    
+    def train_batch(self, batch, grad_hook_mode=False):
+        out_manif = None
+        if self.use_llpm_buf:
+            self.models['backbone_diffuse'].zero_grad()
+            self.models['backbone_specular'].zero_grad()
+            p_buffers = self._manifold_forward(batch)
+
+            # if self.iters % 1000 == 1:
+            #     pimg = np.mean(np.transpose(p_buffers['diffuse'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
+            #     pimg = np.clip(pimg, 0.0, 1.0)
+            #     plt.imsave('../LLPM_results/pbuf_%s_diffuse.png'%(self.args.model_name), pimg)
+
+            #     pimg = np.mean(np.transpose(p_buffers['specular'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
+            #     pimg = np.clip(pimg, 0.0, 1.0)
+            #     plt.imsave('../LLPM_results/pbuf_%s_specular.png'%(self.args.model_name), pimg)
+            
+            """ Feature disentanglement """
+            _, _, c, _, _ = p_buffers['diffuse'].shape
+            assert c >= 2
+            if self.disentanglement_option == 'm11r11':
+                out_manif = p_buffers
+            elif self.disentanglement_option == 'm10r01':
+                out_manif = {
+                        'diffuse': p_buffers['diffuse'][:,:,c//2:,...],
+                        'specular': p_buffers['specular'][:,:,c//2:,...]
+                }
+                p_buffers = {
+                        'diffuse': p_buffers['diffuse'][:,:,:c//2,...],
+                        'specular': p_buffers['specular'][:,:,:c//2,...]
+                }
+            elif self.disentanglement_option == 'm11r01':
+                out_manif = p_buffers
+                p_buffers = {
+                        'diffuse': p_buffers['diffuse'][:,:,:c//2,...],
+                        'specular': p_buffers['specular'][:,:,:c//2,...]
+                }
+            elif self.disentanglement_option == 'm10r11':
+                out_manif = {
+                        'diffuse': p_buffers['diffuse'][:,:,c//2:,...],
+                        'specular': p_buffers['specular'][:,:,c//2:,...]
+                }
+
+            p_var_diffuse = p_buffers['diffuse'].var(1).mean(1, keepdims=True).detach()
+            p_var_diffuse /= p_buffers['diffuse'].shape[1] # spp
+            p_var_specular = p_buffers['specular'].var(1).mean(1, keepdims=True).detach()
+            p_var_specular /= p_buffers['specular'].shape[1]
+
+            # make a new batch
+            if not self.no_gbuf:
+                batch = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                    'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'], p_buffers['specular'].mean(1), p_var_specular], 1),
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+                }
+            else:
+                batch = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'][:, :10], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                    'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'][:, :10], p_buffers['specular'].mean(1), p_var_specular], 1),
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+                }
+
+                # del p_buffer
+    
+        self.models['dncnn'].zero_grad()
+        self.models['error'].zero_grad()
+        # with torch.no_grad():
+        #     out = self._regress_forward(batch)
+        out = self._regress_forward(batch)
+        # make new batch
+        # tonemap_d_diffuse = torch.log(out['diffuse'].clone().detach() + 1.0)
+        # tonemap_in_diffuse = torch.log(crop_like(batch['kpcn_diffuse_in'][:, :3], out['diffuse']) + 1.0)
+        # tonemap_d_diffuse = ToneMapBatch(out['diffuse'].clone().detach())
+        # tonemap_in_diffuse = ToneMapBatch(crop_like(batch['kpcn_diffuse_in'][:, :3], out['diffuse']))
+        tonemap_d_diffuse = out['diffuse'].clone().detach()
+        tonemap_in_diffuse = crop_like(batch['kpcn_diffuse_in'][:, :3], out['diffuse'])
+        var_diffuse = crop_like(batch['kpcn_diffuse_in'][:, 3:4], out['diffuse'])
+        # tonemap_d_specular = ToneMapBatch(torch.exp(out['specular'].clone().detach()) - 1.0)
+        # tonemap_in_specular = ToneMapBatch(crop_like(batch['kpcn_specular_in'][:, :3], out['specular']))
+        # tonemap_d_specular = ToneMapBatch(out['specular'].clone().detach())
+        # tonemap_in_specular = ToneMapBatch(crop_like(batch['kpcn_specular_in'][:, :3], out['specular']))
+        tonemap_d_specular = out['specular'].clone().detach()
+        tonemap_in_specular = crop_like(batch['kpcn_specular_in'][:, :3], out['specular'])
+        var_specular = crop_like(batch['kpcn_specular_in'][:, 3:4], out['specular'])
+        batch_err = {
+            # 'kpcn_diffuse_in': torch.cat([out['diffuse'].clone().detach(), crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse'])], dim=1),
+            # 'kpcn_specular_in': torch.cat([out['specular'].clone().detach(), crop_like(batch['kpcn_specular_in'][:, 10:], out['specular'])], dim=1)
+            'kpcn_diffuse_in': torch.cat([tonemap_d_diffuse, tonemap_in_diffuse, var_diffuse, crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse'])], dim=1),
+            'kpcn_specular_in': torch.cat([tonemap_d_specular, tonemap_in_specular, var_specular, crop_like(batch['kpcn_specular_in'][:, 10:], out['specular'])], dim=1)
+
+        }
+        err = self._error_forward(batch_err)
+        loss_dict = self._backward(batch, out, out_manif, err)
+
+        if grad_hook_mode: # do not update this model
+            return
+
+        self._logging(loss_dict)
+        # del loss_dict
+        self._optimization()
+
+    def _manifold_forward(self, batch):
+        if not self.no_p_model:
+            p_buffer_diffuse = self.models['backbone_diffuse'](batch)
+            p_buffer_specular = self.models['backbone_specular'](batch)
+            p_buffers = {
+                'diffuse': p_buffer_diffuse,
+                'specular': p_buffer_specular
+            }
+        else:
+            p_buffers = {
+                'diffuse': batch['paths'],
+                'specular': batch['paths']
+            }
+        return p_buffers
+
+    def _regress_forward(self, batch):
+        return self.models['dncnn'](batch)
+
+    def _error_forward(self, batch):
+        # for key in out: print(key)
+        return self.models['error'](batch)
+
+    def _backward(self, batch, out, p_buffers, err=None):
+        # assert 'radiance' in out
+        assert 'diffuse' in out
+        assert 'specular' in out
+        # assert 'diffuse' in err
+        # assert 'specular' in err
+
+        total, diffuse, specular = out['radiance'], out['diffuse'], out['specular']
+        err_diffuse, err_specular = err['diffuse'], err['specular']
+        loss_dict = {}
+        tgt_total = crop_like(batch['target_total'], total)
+        tgt_diffuse = crop_like(batch['target_diffuse'], err_diffuse)
+        tgt_specular = crop_like(batch['target_specular'], err_specular)
+        # in_diffuse = crop_like(batch['kpcn_diffuse_buffer'], err_diffuse)
+        # in_specular = crop_like(batch['kpcn_specular_buffer'], err_specular)
+
+        # train KPCN
+        if self.train_branches: # training diffuse and specular branches
+            tgt_diffuse = crop_like(batch['target_diffuse'], diffuse)
+            L_diffuse = self.loss_funcs['l_diffuse'](diffuse, tgt_diffuse)
+
+            tgt_specular = crop_like(batch['target_specular'], specular)
+            L_specular = self.loss_funcs['l_specular'](specular, tgt_specular)
+
+            loss_dict['l_diffuse'] = L_diffuse.detach()
+            loss_dict['l_specular'] = L_specular.detach()
+
+            if self.manif_learn:
+                p_buffer_diffuse = crop_like(p_buffers['diffuse'], diffuse)
+                L_manif_diffuse = self.loss_funcs['l_manif'](p_buffer_diffuse, tgt_diffuse)
+                L_diffuse += L_manif_diffuse * self.w_manif
+
+                p_buffer_specular = crop_like(p_buffers['specular'], specular)
+                L_manif_specular = self.loss_funcs['l_manif'](p_buffer_specular, tgt_specular)
+                L_specular += L_manif_specular * self.w_manif
+
+                loss_dict['l_manif_diffuse'] = L_manif_diffuse.detach()
+                loss_dict['l_manif_specular'] = L_manif_specular.detach()
+
+                del p_buffer_diffuse
+                del p_buffer_specular
+
+            L_diffuse.backward()
+            L_specular.backward()
+
+        else: # post-training
+            L_total = self.loss_funcs['l_recon'](total, tgt_total)
+            loss_dict['l_total'] = L_total.detach()
+            L_total.backward()
+
+        with torch.no_grad():
+            loss_dict['rmse'] = self.loss_funcs['l_test'](total, tgt_total).detach()
+        self.cnt += 1
+
+        with torch.no_grad():
+            # print(self.error_type)
+            # gt_err_diff = score_map(torch.log(diffuse.clone().detach() + 1.0), torch.log(tgt_diffuse + 1.0), error_type=self.error_type)
+            gt_err_diff = score_map(diffuse.clone().detach(), tgt_diffuse, error_type=self.error_type)
+            # print(gt_err_diff.shape, diffuse.shape)
+            gt_err_spec = score_map(specular.clone().detach(), tgt_specular, error_type=self.error_type)
+            # gt_err_spec = score_map(specular.clone().detach(), tgt_specular, error_type=self.error_type)
+        
+        L_diff_err = self.loss_funcs['l_adv'](err_diffuse, gt_err_diff)
+        L_spec_err = self.loss_funcs['l_adv'](err_specular, gt_err_spec)
+        loss_dict['L_err_diffuse'] = L_diff_err.detach()
+        loss_dict['L_err_specular'] = L_spec_err.detach()
+        
+        # L_diff_err = L_diff_err * 10.0
+        # L_spec_err = L_spec_err * 10.0
+        L_diff_err.backward()
+        L_spec_err.backward()
+        
+        return loss_dict
+
+    def _logging(self, loss_dict):
+        """ error handling """
+        for key in loss_dict:
+            if not torch.isfinite(loss_dict[key]).all():
+                raise RuntimeError("%s: Non-finite loss at train time."%(key))
+        
+        # (NOTE: modified for each model)
+        for model_name in self.models:
+            nn.utils.clip_grad_value_(self.models[model_name].parameters(), clip_value=1.0)
+
+        """ logging """
+        for key in loss_dict:
+            if 'm_' + key not in self.m_losses:
+                self.m_losses['m_' + key] = torch.tensor(0.0, device=loss_dict[key].device)
+            self.m_losses['m_' + key] += loss_dict[key]
+    
+    def _optimization(self):
+        for model_name in self.models:
+            # if 'error' in model_name:
+            #     self.optims['optim_' + model_name].step()
+            self.optims['optim_' + model_name].step()
+
+    def to_eval_mode(self):
+        for model_name in self.models:
+            self.models[model_name].eval()
+        self.m_losses['m_val'] = torch.tensor(0.0)
+        self.m_losses['m_val_err_diff'] = torch.tensor(0.0)
+        self.m_losses['m_val_err_spec'] = torch.tensor(0.0)
+
+    def validate_batch(self, batch, mode=None):
+        p_buffers = None
+
+        if self.use_llpm_buf:
+            p_buffers = self._manifold_forward(batch)
+            
+            """ Feature disentanglement """
+            _, _, c, _, _ = p_buffers['diffuse'].shape
+            assert c >= 2
+            if self.disentanglement_option == 'm10r01' or self.disentanglement_option == 'm11r01':
+                p_buffers = {
+                        'diffuse': p_buffers['diffuse'][:,:,:c//2,...],
+                        'specular': p_buffers['specular'][:,:,:c//2,...]
+                }
+
+            p_var_diffuse = p_buffers['diffuse'].var(1).mean(1, keepdims=True).detach()
+            p_var_diffuse /= p_buffers['diffuse'].shape[1] # spp
+            p_var_specular = p_buffers['specular'].var(1).mean(1, keepdims=True).detach()
+            p_var_specular /= p_buffers['specular'].shape[1]
+
+            # make a new batch
+            
+            batch = {
+                'target_total': batch['target_total'],
+                'target_diffuse': batch['target_diffuse'],
+                'target_specular': batch['target_specular'],
+                'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'][:, :10], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'][:, :10], p_buffers['specular'].mean(1), p_var_specular], 1),
+                'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                'kpcn_albedo': batch['kpcn_albedo'],
+            }
+        
+        out = self._regress_forward(batch)
+
+        # tonemap_d_diffuse = torch.log(out['diffuse'].clone().detach() + 1.0)
+        # tonemap_in_diffuse = torch.log(crop_like(batch['kpcn_diffuse_in'][:, :3], out['diffuse']) + 1.0)
+        tonemap_d_diffuse = out['diffuse'].clone().detach()
+        tonemap_in_diffuse = crop_like(batch['kpcn_diffuse_in'][:, :3], out['diffuse'])
+        var_diffuse = crop_like(batch['kpcn_diffuse_in'][:, 3:4], out['diffuse'])
+        # tonemap_d_specular = ToneMapBatch(torch.exp(out['specular'].clone().detach()) - 1.0)
+        # tonemap_in_specular = ToneMapBatch(crop_like(batch['kpcn_specular_in'][:, :3], out['specular']))
+        # tonemap_d_specular = torch.exp(out['specular'].clone().detach())
+        tonemap_d_specular = out['specular'].clone().detach()
+        tonemap_in_specular = crop_like(batch['kpcn_specular_in'][:, :3], out['specular'])
+        var_specular = crop_like(batch['kpcn_specular_in'][:, 3:4], out['specular'])
+        batch_err = {
+            # 'kpcn_diffuse_in': torch.cat([out['diffuse'].clone().detach(), crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse'])], dim=1),
+            # 'kpcn_specular_in': torch.cat([out['specular'].clone().detach(), crop_like(batch['kpcn_specular_in'][:, 10:], out['specular'])], dim=1)
+            'kpcn_diffuse_in': torch.cat([tonemap_d_diffuse, tonemap_in_diffuse, var_diffuse, crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse'])], dim=1),
+            'kpcn_specular_in': torch.cat([tonemap_d_specular, tonemap_in_specular, var_specular, crop_like(batch['kpcn_specular_in'][:, 10:], out['specular'])], dim=1)
+
+        }
+        # batch_err = {
+        #     # 'kpcn_diffuse_in': torch.cat([out['diffuse'].clone().detach(), crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse'])], dim=1),
+        #     # 'kpcn_specular_in': torch.cat([out['specular'].clone().detach(), crop_like(batch['kpcn_specular_in'][:, 10:], out['specular'])], dim=1)
+        #     'kpcn_diffuse_in': torch.cat([out['diffuse'].clone().detach(), crop_like(batch['kpcn_diffuse_in'], out['diffuse'])], dim=1),
+        #     'kpcn_specular_in': torch.cat([out['specular'].clone().detach(), crop_like(batch['kpcn_specular_in'], out['specular'])], dim=1)
+        # }
+        err = self._error_forward(batch_err)
+        err_diffuse, err_specular = err['diffuse'], err['specular']
+        rad_dict = {'diffuse': out['diffuse'],
+                    'specular': out['specular']}
+        kernel_dict = {'diffuse': None,
+                      'specular': None}
+        
+        tgt_total = crop_like(batch['target_total'], out['radiance'])
+        tgt_diffuse = crop_like(batch['target_diffuse'], err_diffuse)
+        tgt_specular = crop_like(batch['target_specular'], err_specular)
+        # in_diffuse = crop_like(batch['kpcn_diffuse_buffer'], err_diffuse)
+        # in_specular = crop_like(batch['kpcn_specular_buffer'], err_specular)
+        gt_err_diff = score_map(out['diffuse'], tgt_diffuse, error_type = self.error_type)
+        # gt_err_diff = score_map(torch.log(out['diffuse'] + 1.0), torch.log(tgt_diffuse + 1.0), error_type = self.error_type)
+        gt_err_spec = score_map(out['specular'], tgt_specular, error_type = self.error_type)
+
+        L_total = self.loss_funcs['l_test'](out['radiance'], tgt_total)
+        L_diff_err = self.loss_funcs['l_adv'](err['diffuse'], gt_err_diff)
+        L_spec_err = self.loss_funcs['l_adv'](err['specular'], gt_err_spec)
+
+        score_dict = {
+            's_diffuse': err_diffuse, 's_specular': err_specular,
+            's_gt_diffuse': gt_err_diff, 's_gt_specular': gt_err_spec
+        }
+
+        if self.m_losses['m_val'] == 0.0 and self.m_losses['m_val'].device != L_total.device:
+            self.m_losses['m_val'] = torch.tensor(0.0, device=L_total.device)
+        self.m_losses['m_val'] += L_total.detach()
+        if self.m_losses['m_val_err_diff'] == 0.0 and self.m_losses['m_val_err_diff'].device != L_diff_err.device:
+            self.m_losses['m_val_err_diff'] = torch.tensor(0.0, device=L_diff_err.device)
+        # print(self.m_losses['m_val_err_diff'].device, L_diff_err.device)
+        self.m_losses['m_val_err_diff'] += L_diff_err.detach()
+        if self.m_losses['m_val_err_spec'] == 0.0 and self.m_losses['m_val_err_spec'].device != L_spec_err.device:
+            self.m_losses['m_val_err_spec'] = torch.tensor(0.0, device=L_spec_err.device)
+        self.m_losses['m_val_err_spec'] += L_spec_err.detach()
+        
+
+
+        return out['radiance'],  p_buffers, rad_dict, kernel_dict, score_dict
+
+    def get_epoch_summary(self, mode, norm):
+        if mode == 'train':
+            losses = {}
+            print('[][][]', end=' ')
+            for key in self.m_losses:
+                if 'm_val' in key:
+                    continue
+                tr_l_tmp = self.m_losses[key] / (norm * 2)
+                tr_l_tmp *= 1000
+                print('%s: %.3fE-3'%(key, tr_l_tmp), end='\t')
+                losses[key] = tr_l_tmp
+                self.m_losses[key] = torch.tensor(0.0, device=self.m_losses[key].device)
+            print('')
+            return losses #-1.0
+        else:
+            return self.m_losses['m_val_err_diff'].item() / (norm * 2), self.m_losses['m_val_err_spec'].item() / (norm * 2)
+
+class ErrorEnsembleKPCNInterface(BaseInterface):
+
+    def __init__(self, models, optims, loss_funcs, args, visual=False, use_llpm_buf=False, manif_learn=False, w_manif=0.1, train_branches=True, disentanglement_option="m11r11", w_error=1.0, error_type='L1'):
+        if manif_learn:
+            assert 'backbone_diffuse' in models, "argument `models` dictionary should contain `'backbone_diffuse'` key."
+            assert 'backbone_specular' in models, "argument `models` dictionary should contain `'backbone_specular'` key."
+        assert 'dncnn_G' in models, "argument `models` dictionary should contain `'dncnn_G'` key."
+        assert 'dncnn_P' in models, "argument `models` dictionary should contain `'dncnn_P'` key."
+        assert 'error_diffuse' in models, "argument `models` dictionary should contain `'error_diffuse'` key."
+        assert 'error_specular' in models, "argument `models` dictionary should contain `'error_specular'` key."
+        assert 'interpolate_diffuse' in models, "argument `models` dictionary should contain `interpolation_diffuse` key."
+        assert 'interpolate_specular' in models, "argument `models` dictionary should contain `interpolation_specular` key."
+        if train_branches:
+            assert 'l_diffuse' in loss_funcs
+            assert 'l_specular' in loss_funcs
+        if manif_learn:
+            assert 'l_manif' in loss_funcs
+        assert 'l_recon' in loss_funcs
+        assert 'l_test' in loss_funcs
+        assert 'l_error' in loss_funcs
+        assert disentanglement_option in ['m11r11', 'm10r01', 'm11r01', 'm10r11']
+        
+        super(ErrorEnsembleKPCNInterface, self).__init__(models, optims, loss_funcs, args, visual, use_llpm_buf, manif_learn, w_manif)
+        self.train_branches = train_branches
+        self.disentanglement_option = disentanglement_option
+        self.error_type = args.error_type
+        self.w_error = w_error
+        self.error = args.error
+        self.interpolate = args.interpolate
+        self.fix = args.fix
+        self.model_type = args.model_type
+        self.best_err = 1e10
+        self.epoch = 0
+        self.cnt = 0    
+        # print('interpolate', self.interpolate)
+        
+    def __str__(self):
+        return 'ErrorEnsembleKPCN'
+
+    def to_train_mode(self):
+        for model_name in self.models:
+            self.models[model_name].train()
+            if self.fix and ('dncnn' in model_name or 'backbone' in model_name):
+                self.models[model_name].eval()
+                # print(model_name, 'eval')
+            assert 'optim_' + model_name in self.optims, '`optim_%s`: an optimization algorithm is not defined.'%(model_name)
+    
+    def preprocess(self, batch=None, use_single=None):
+        assert 'target_total' in batch
+        assert 'target_diffuse' in batch
+        assert 'target_specular' in batch
+        assert 'kpcn_diffuse_in' in batch
+        assert 'kpcn_specular_in' in batch
+        assert 'kpcn_diffuse_buffer' in batch
+        assert 'kpcn_specular_buffer' in batch
+        assert 'kpcn_albedo' in batch
+        if self.use_llpm_buf:
+            assert 'paths' in batch
+
+        self.iters += 1
+    
+    def train_batch(self, batch, grad_hook_mode=False):
+        out_manif = None
+        if self.use_llpm_buf:
+            if not self.fix:
+                self.models['backbone_diffuse'].zero_grad()
+                self.models['backbone_specular'].zero_grad()
+                p_buffers = self._manifold_forward(batch)
+            else:
+                with torch.no_grad():
+                    p_buffers = self._manifold_forward(batch)
+            # print('grad p_buffers', p_buffers['diffuse'].requires_grad)
+            # if self.iters % 1000 == 1:
+            #     pimg = np.mean(np.transpose(p_buffers['diffuse'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
+            #     pimg = np.clip(pimg, 0.0, 1.0)
+            #     plt.imsave('../LLPM_results/pbuf_%s_diffuse.png'%(self.args.model_name), pimg)
+
+            #     pimg = np.mean(np.transpose(p_buffers['specular'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
+            #     pimg = np.clip(pimg, 0.0, 1.0)
+            #     plt.imsave('../LLPM_results/pbuf_%s_specular.png'%(self.args.model_name), pimg)
+            
+            """ Feature disentanglement """
+            _, _, c, _, _ = p_buffers['diffuse'].shape
+            assert c >= 2
+            if self.disentanglement_option == 'm11r11':
+                out_manif = p_buffers
+            elif self.disentanglement_option == 'm10r01':
+                out_manif = {
+                        'diffuse': p_buffers['diffuse'][:,:,c//2:,...],
+                        'specular': p_buffers['specular'][:,:,c//2:,...]
+                }
+                p_buffers = {
+                        'diffuse': p_buffers['diffuse'][:,:,:c//2,...],
+                        'specular': p_buffers['specular'][:,:,:c//2,...]
+                }
+            elif self.disentanglement_option == 'm11r01':
+                out_manif = p_buffers
+                p_buffers = {
+                        'diffuse': p_buffers['diffuse'][:,:,:c//2,...],
+                        'specular': p_buffers['specular'][:,:,:c//2,...]
+                }
+            elif self.disentanglement_option == 'm10r11':
+                out_manif = {
+                        'diffuse': p_buffers['diffuse'][:,:,c//2:,...],
+                        'specular': p_buffers['specular'][:,:,c//2:,...]
+                }
+
+            p_var_diffuse = p_buffers['diffuse'].var(1).mean(1, keepdims=True).detach()
+            p_var_diffuse /= p_buffers['diffuse'].shape[1] # spp
+            p_var_specular = p_buffers['specular'].var(1).mean(1, keepdims=True).detach()
+            p_var_specular /= p_buffers['specular'].shape[1]
+
+            # make a new batch
+            batch_G = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    'kpcn_diffuse_in': batch['kpcn_diffuse_in'][:, :-1],
+                    'kpcn_specular_in': batch['kpcn_specular_in'][:, :-1],
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+            }
+            batch_P = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    # 'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'][:, :10], batch['kpcn_diffuse_in'][:, -1:], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                    # 'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'][:, :10], batch['kpcn_specular_in'][:, -1:], p_buffers['specular'].mean(1), p_var_specular], 1),
+                    'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'][:, :10], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                    'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'][:, :10], p_buffers['specular'].mean(1), p_var_specular], 1),
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+            }
+        else:
+            assert('should use llpm')
+
+                # del p_buffer
+
+        # pass denoiser
+        if not self.fix:
+            self.models['dncnn_G'].zero_grad()
+            self.models['dncnn_P'].zero_grad()
+            out = self._regress_forward(batch_G, batch_P)
+        else:
+            with torch.no_grad():
+                out = self._regress_forward(batch_G, batch_P)
+
+        # print('grad dncnn', out['radiance_G'].requires_grad)
+        
+
+        # make new batch for error estimation
+        if self.error:
+            # print('forward error')
+            self.models['error_diffuse'].zero_grad()
+            self.models['error_specular'].zero_grad()
+            # batch_err = {
+            #     'diffuse_G': torch.cat([
+            #                             out['diffuse_G'].clone().detach(), 
+            #                             crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse_G']), 
+            #                             crop_like(p_buffers['diffuse'].mean(1).clone().detach(), out['diffuse_G']),
+            #                             crop_like(p_var_diffuse.clone().detach(), out['diffuse_G'])
+            #                             ], dim=1),
+            #     'specular_G': torch.cat([
+            #                             out['specular_G'].clone().detach(), 
+            #                             crop_like(batch['kpcn_specular_in'][:, 10:], out['specular_G']),
+            #                             crop_like(p_buffers['specular'].mean(1).clone().detach(), out['specular_G']),
+            #                             crop_like(p_var_specular.clone().detach(), out['specular_G'])
+            #                             ], dim=1),
+            #     'diffuse_P': torch.cat([
+            #                             out['diffuse_P'].clone().detach(), 
+            #                             crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse_P']), 
+            #                             crop_like(p_buffers['diffuse'].mean(1).clone().detach(), out['diffuse_P']),
+            #                             crop_like(p_var_diffuse.clone().detach(), out['diffuse_P'])
+            #                             ], dim=1),
+            #     'specular_P': torch.cat([
+            #                             out['specular_P'].clone().detach(), 
+            #                             crop_like(batch['kpcn_specular_in'][:, 10:], out['specular_P']),
+            #                             crop_like(p_buffers['specular'].mean(1).clone().detach(), out['specular_P']),
+            #                             crop_like(p_var_specular.clone().detach(), out['specular_P'])
+            #                             ], dim=1),
+            # }
+            batch_err = {
+                'diffuse_G': torch.cat([
+                                        out['diffuse_G'].clone().detach(), # 
+                                        crop_like(batch['kpcn_diffuse_in'][:, :3], out['diffuse_G']), # 
+                                        crop_like(batch['kpcn_diffuse_in'][:, 3:4], out['diffuse_G']), 
+                                        crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse_G']), 
+                                        crop_like(p_buffers['diffuse'].mean(1).clone().detach(), out['diffuse_G']),
+                                        crop_like(p_var_diffuse.clone().detach(), out['diffuse_G'])
+                                        ], dim=1),
+                'specular_G': torch.cat([
+                                        out['specular_G'].clone().detach(), # 
+                                        crop_like(batch['kpcn_specular_in'][:, :3], out['specular_G']), #
+                                        crop_like(batch['kpcn_specular_in'][:, 3:4], out['specular_G']), 
+                                        crop_like(batch['kpcn_specular_in'][:, 10:], out['specular_G']), 
+                                        crop_like(p_buffers['specular'].mean(1).clone().detach(), out['specular_G']),
+                                        crop_like(p_var_specular.clone().detach(), out['specular_G'])
+                                        ], dim=1),
+                'diffuse_P': torch.cat([
+                                        out['diffuse_P'].clone().detach(), # 
+                                        crop_like(batch['kpcn_diffuse_in'][:, :3], out['diffuse_P']), #
+                                        crop_like(batch['kpcn_diffuse_in'][:, 3:4], out['diffuse_G']), 
+                                        crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse_P']), 
+                                        crop_like(p_buffers['diffuse'].mean(1).clone().detach(), out['diffuse_P']),
+                                        crop_like(p_var_diffuse.clone().detach(), out['diffuse_P'])
+                                        ], dim=1),
+                'specular_P': torch.cat([
+                                        out['specular_P'].clone().detach(),
+                                        crop_like(batch['kpcn_specular_in'][:, :3], out['specular_P']), # 
+                                        crop_like(batch['kpcn_specular_in'][:, 3:4], out['specular_P']), 
+                                        crop_like(batch['kpcn_specular_in'][:, 10:], out['specular_P']), 
+                                        crop_like(p_buffers['specular'].mean(1).clone().detach(), out['specular_P']),
+                                        crop_like(p_var_specular.clone().detach(), out['specular_P'])
+                                        ], dim=1),
+            }
+            # print('error forward')
+            err = self._error_forward(batch_err)
+        else:
+            b, c, h, w = out['diffuse_G'].shape
+            # err = {
+            #     'diffuse_G': torch.cuda.FloatTensor((b, 1 ,h, w)).fill_(0),
+            #     'specular_G': torch.cuda.FloatTensor((b, 1 ,h, w)).fill_(0),
+            #     'diffuse_P': torch.cuda.FloatTensor((b, 1 ,h, w)).fill_(0),
+            #     'specular_P': torch.cuda.FloatTensor((b, 1 ,h, w)).fill_(0),
+            # }
+            # err = {
+            #     'diffuse_G': torch.zeros((b, 1, h, w)).cuda(),
+            #     'specular_G': torch.zeros((b, 1, h, w)).cuda(),
+            #     'diffuse_P': torch.zeros((b, 1, h, w)).cuda(),
+            #     'specular_P': torch.zeros((b, 1, h, w)).cuda()
+            # }
+            # print('calculate gt and put it in')
+            with torch.no_grad():
+                # print(self.error_type)
+                gt_err_diff_G = score_map(out['diffuse_G'].detach(), crop_like(batch['target_diffuse'], out['diffuse_G']), error_type=self.error_type)
+                gt_err_diff_P = score_map(out['diffuse_P'].clone().detach(), crop_like(batch['target_diffuse'], out['diffuse_P']), error_type=self.error_type)
+                gt_err_spec_G = score_map(out['specular_G'].clone().detach(), crop_like(batch['target_specular'], out['specular_G']), error_type=self.error_type)
+                gt_err_spec_P = score_map(out['specular_P'].clone().detach(), crop_like(batch['target_specular'], out['specular_P']), error_type=self.error_type)
+                err = {
+                    'diffuse_G': gt_err_diff_G,
+                    'specular_G': gt_err_spec_G,
+                    'diffuse_P': gt_err_diff_P,
+                    'specular_P': gt_err_spec_P
+                }
+
+        if self.interpolate:
+            self.models['interpolate_diffuse'].zero_grad()
+            self.models['interpolate_specular'].zero_grad()
+            # make new batch for interpolation
+            batch_interp = {
+                'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
+                                    err['diffuse_G'].clone().detach(), 
+                                    out['diffuse_P'].clone().detach(),
+                                    err['diffuse_P'].clone().detach()], dim=1),
+                'specular': torch.cat([out['specular_G'].clone().detach(), 
+                                    err['specular_G'].clone().detach(), 
+                                    out['specular_P'].clone().detach(),
+                                    err['specular_P'].clone().detach()], dim=1)
+            }
+            # print('interpolation forward')
+            interpolation_W = self._interpolation_forward(batch_interp)
+
+            # apply interpolation
+            if interpolation_W['diffuse'].shape[1] > 1:
+                final_diffuse = out['diffuse_G'] * interpolation_W['diffuse'][:, :1] + out['diffuse_P'] * interpolation_W['diffuse'][:, 1:]
+                final_specular = out['specular_G'] * interpolation_W['specular'][:, :1] + out['specular_P'] * interpolation_W['specular'][:, 1:]
+            else:
+                final_diffuse = out['diffuse_G'] * interpolation_W['diffuse'] + out['diffuse_P'] * (1.0 -interpolation_W['diffuse'])
+                final_specular = out['specular_G'] * interpolation_W['specular'] + out['specular_P'] * (1.0 - interpolation_W['specular'])
+            final_radiance = final_diffuse * crop_like(batch['kpcn_albedo'], final_diffuse) + torch.exp(final_specular) - 1.0
+            out['diffuse_I'] = final_diffuse
+            out['specular_I'] = final_specular
+            out['radiance_I'] = final_radiance
+        loss_dict = self._backward(batch, out, out_manif, err)
+
+        if grad_hook_mode: # do not update this model
+            return
+
+        self._logging(loss_dict)
+        # del loss_dict
+        self._optimization()
+
+    def _manifold_forward(self, batch):
+        p_buffer_diffuse = self.models['backbone_diffuse'](batch)
+        p_buffer_specular = self.models['backbone_specular'](batch)
+        p_buffers = {
+            'diffuse': p_buffer_diffuse,
+            'specular': p_buffer_specular
+        }
+        return p_buffers
+
+    def _regress_forward(self, batch_G, batch_P):
+        out_G = self.models['dncnn_G'](batch_G)
+        out_P = self.models['dncnn_P'](batch_P)
+        out = {
+            'radiance_G' : out_G['radiance'],
+            'diffuse_G': out_G['diffuse'],
+            'specular_G': out_G['specular'],
+            'radiance_P': out_P['radiance'],
+            'diffuse_P': out_P['diffuse'],
+            'specular_P': out_P['specular']
+        }
+        return out
+
+    def _error_forward(self, batch):
+        # for key in out: print(key)
+        error_diffuse_G = self.models['error_diffuse'](batch['diffuse_G'], domain=0)
+        error_diffuse_P = self.models['error_diffuse'](batch['diffuse_P'], domain=1)
+        error_specular_G = self.models['error_specular'](batch['specular_G'], domain=0)
+        error_specular_P = self.models['error_specular'](batch['specular_P'], domain=1)
+        error = {
+            'diffuse_G': error_diffuse_G,
+            'specular_G': error_specular_G,
+            'diffuse_P': error_diffuse_P,
+            'specular_P': error_specular_P
+        }
+        return error
+
+    def _interpolation_forward(self, batch):
+        interp_W_diffuse = self.models['interpolate_diffuse'](batch['diffuse'])
+        interp_W_specular = self.models['interpolate_specular'](batch['specular'])
+        interp_W = {
+            'diffuse': interp_W_diffuse,
+            'specular': interp_W_specular
+        }
+        return interp_W
+
+    def _backward(self, batch, out, p_buffers, err=None):
+        # assert 'radiance_G' in out
+        # assert 'diffuse_G' in out
+        # assert 'specular_G' in out
+        # assert 'radiance_P' in out
+        # assert 'diffuse_P' in out
+        # assert 'specular_P' in out
+        # assert 'radiance_I' in out
+        # assert 'diffuse_I' in out
+        # assert 'specular_I' in out
+        # assert 'diffuse_G' in err
+        # assert 'specular_G' in err
+        # assert 'diffuse_P' in err
+        # assert 'specular_P' in err
+        total_G, diffuse_G, specular_G = out['radiance_G'], out['diffuse_G'], out['specular_G']
+        total_P, diffuse_P, specular_P = out['radiance_P'], out['diffuse_P'], out['specular_P']
+        error_diffuse_G, error_specular_G = err['diffuse_G'], err['specular_G']
+        error_diffuse_P, error_specular_P = err['diffuse_P'], err['specular_P']
+        tgt_diffuse = crop_like(batch['target_diffuse'], diffuse_G)
+        tgt_specular = crop_like(batch['target_specular'], specular_G)
+        
+        loss_dict = {}
+
+        if self.train_branches: # training diffuse and specular branches
+
+            if self.interpolate:
+                total_I, diffuse_I, specular_I = out['radiance_I'], out['diffuse_I'], out['specular_I']
+                # L_diffuse_G = self.loss_funcs['l_diffuse'](diffuse_G, tgt_diffuse)
+                # L_diffuse_P = self.loss_funcs['l_diffuse'](diffuse_P, tgt_diffuse)
+
+                # L_specular_G = self.loss_funcs['l_specular'](specular_G, tgt_specular)
+                # L_specular_P = self.loss_funcs['l_specular'](specular_P, tgt_specular)
+                L_diffuse_I = self.loss_funcs['l_diffuse'](diffuse_I, tgt_diffuse)
+                L_specular_I = self.loss_funcs['l_specular'](specular_I, tgt_specular)
+                loss_dict['l_diffuse_I'] = L_diffuse_I.detach()
+                loss_dict['l_specular_I'] = L_specular_I.detach()
+                L_diffuse = L_diffuse_I
+                L_specular = L_specular_I
+
+            # loss_dict['l_diffuse_G'] = L_diffuse_G.detach()
+            # loss_dict['l_diffuse_P'] = L_diffuse_P.detach()
+            
+            # loss_dict['l_specular_G'] = L_specular_G.detach()
+            # loss_dict['l_specular_P'] = L_specular_P.detach()
+            
+            
+            # L_diffuse = L_diffuse_G + L_diffuse_P + L_diffuse_I
+            # L_specular = L_diffuse_G + L_specular_P + L_specular_I
+
+            if self.interpolate and self.manif_learn:
+                p_buffer_diffuse = crop_like(p_buffers['diffuse'], diffuse_P)
+                L_manif_diffuse = self.loss_funcs['l_manif'](p_buffer_diffuse, tgt_diffuse)
+                L_diffuse += L_manif_diffuse * self.w_manif
+
+                p_buffer_specular = crop_like(p_buffers['specular'], specular_P)
+                L_manif_specular = self.loss_funcs['l_manif'](p_buffer_specular, tgt_specular)
+                L_specular += L_manif_specular * self.w_manif
+
+                loss_dict['l_manif_diffuse'] = L_manif_diffuse.detach()
+                loss_dict['l_manif_specular'] = L_manif_specular.detach()
+
+                L_diffuse += L_manif_diffuse * self.w_manif
+                L_specular += L_manif_specular * self.w_manif
+
+            if self.error:
+                # print('backward error')
+                with torch.no_grad():
+                    # print(self.error_type)
+                    gt_err_diff_G = score_map(diffuse_G.clone().detach(), tgt_diffuse, error_type=self.error_type)
+                    gt_err_diff_P = score_map(diffuse_P.clone().detach(), tgt_diffuse, error_type=self.error_type)
+                    gt_err_spec_G = score_map(specular_G.clone().detach(), tgt_specular, error_type=self.error_type)
+                    gt_err_spec_P = score_map(specular_P.clone().detach(), tgt_specular, error_type=self.error_type)
+
+                L_err_diff_G = self.loss_funcs['l_error'](error_diffuse_G, gt_err_diff_G)
+                L_err_diff_P = self.loss_funcs['l_error'](error_diffuse_P, gt_err_diff_P)
+                L_err_spec_G = self.loss_funcs['l_error'](error_specular_G, gt_err_spec_G)
+                L_err_spec_P = self.loss_funcs['l_error'](error_specular_P, gt_err_spec_P)
+                loss_dict['L_err_diff_G'] = L_err_diff_G.detach()
+                loss_dict['L_err_diff_P'] = L_err_diff_P.detach()
+                loss_dict['L_err_spec_G'] = L_err_spec_G.detach()
+                loss_dict['L_err_spec_P'] = L_err_spec_P.detach()
+
+                if self.interpolate:
+                    # print('add error loss')
+                    L_diffuse += (L_err_diff_G + L_err_diff_P) * self.w_error
+                    L_specular += (L_err_spec_G + L_err_spec_P) * self.w_error
+                else:
+                    # print('use error loss weight', self.w_error)
+                    L_diffuse = (L_err_diff_G + L_err_diff_P)
+                    L_specular = (L_err_spec_G + L_err_spec_P)
+                    # L_diffuse = L_err_diff_G
+                    # L_specular = L_err_spec_G
+                    # print('err_diff_G_grad', L_err_diff_G.requires_grad)
+                    # print('err_spec_G_grad', L_err_spec_G.requires_grad)
+                # L_err_diffuse = (L_err_diff_G + L_err_diff_P) * self.w_error
+                # L_err_specular = (L_err_spec_G + L_err_spec_P) * self.w_error
+                # L_err_diffuse.backward()
+                # L_err_specular.backward()
+            # print('backward')
+            L_diffuse.backward()
+            L_specular.backward()
+
+        else: # post-training
+            if self.interpolate:
+                tgt_total = crop_like(batch['target_diffuse'], total_I)
+                L_total = self.loss_funcs['l_recon'](total_I, tgt_total)
+                loss_dict['l_total'] = L_total.detach()
+                L_total.backward()
+
+        if self.interpolate:
+            with torch.no_grad():
+                tgt_total = crop_like(batch['target_diffuse'], total_I)
+                loss_dict['rmse'] = self.loss_funcs['l_test'](total_I, tgt_total).detach()
+        self.cnt += 1
+
+    
+        
+        return loss_dict
+
+    def _logging(self, loss_dict):
+        """ error handling """
+        for key in loss_dict:
+            if not torch.isfinite(loss_dict[key]).all():
+                raise RuntimeError("%s: Non-finite loss at train time."%(key))
+        
+        # (NOTE: modified for each model)
+        for model_name in self.models:
+            nn.utils.clip_grad_value_(self.models[model_name].parameters(), clip_value=1.0)
+
+        """ logging """
+        for key in loss_dict:
+            if 'm_' + key not in self.m_losses:
+                self.m_losses['m_' + key] = torch.tensor(0.0, device=loss_dict[key].device)
+            self.m_losses['m_' + key] += loss_dict[key]
+    
+    def _optimization(self):
+        for model_name in self.models:
+            if self.fix and ('dncnn' in model_name or 'backbone' in model_name): continue 
+            # print('optimiziation', model_name)
+            self.optims['optim_' + model_name].step()
+
+    def to_eval_mode(self):
+        for model_name in self.models:
+            self.models[model_name].eval()
+        self.m_losses['m_val'] = torch.tensor(0.0)
+        if self.error:
+            self.m_losses['m_val_err_diff'] = torch.tensor(0.0)
+            self.m_losses['m_val_err_spec'] = torch.tensor(0.0)
+
+    def validate_batch(self, batch, mode=None):
+        p_buffers = None
+
+        if self.use_llpm_buf:
+            self.models['backbone_diffuse'].zero_grad()
+            self.models['backbone_specular'].zero_grad()
+            p_buffers = self._manifold_forward(batch)
+
+            # if self.iters % 1000 == 1:
+            #     pimg = np.mean(np.transpose(p_buffers['diffuse'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
+            #     pimg = np.clip(pimg, 0.0, 1.0)
+            #     plt.imsave('../LLPM_results/pbuf_%s_diffuse.png'%(self.args.model_name), pimg)
+
+            #     pimg = np.mean(np.transpose(p_buffers['specular'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
+            #     pimg = np.clip(pimg, 0.0, 1.0)
+            #     plt.imsave('../LLPM_results/pbuf_%s_specular.png'%(self.args.model_name), pimg)
+            
+            """ Feature disentanglement """
+            _, _, c, _, _ = p_buffers['diffuse'].shape
+            assert c >= 2
+            if self.disentanglement_option == 'm11r11':
+                out_manif = p_buffers
+            elif self.disentanglement_option == 'm10r01':
+                out_manif = {
+                        'diffuse': p_buffers['diffuse'][:,:,c//2:,...],
+                        'specular': p_buffers['specular'][:,:,c//2:,...]
+                }
+                p_buffers = {
+                        'diffuse': p_buffers['diffuse'][:,:,:c//2,...],
+                        'specular': p_buffers['specular'][:,:,:c//2,...]
+                }
+            elif self.disentanglement_option == 'm11r01':
+                out_manif = p_buffers
+                p_buffers = {
+                        'diffuse': p_buffers['diffuse'][:,:,:c//2,...],
+                        'specular': p_buffers['specular'][:,:,:c//2,...]
+                }
+            elif self.disentanglement_option == 'm10r11':
+                out_manif = {
+                        'diffuse': p_buffers['diffuse'][:,:,c//2:,...],
+                        'specular': p_buffers['specular'][:,:,c//2:,...]
+                }
+
+            p_var_diffuse = p_buffers['diffuse'].var(1).mean(1, keepdims=True).detach()
+            p_var_diffuse /= p_buffers['diffuse'].shape[1] # spp
+            p_var_specular = p_buffers['specular'].var(1).mean(1, keepdims=True).detach()
+            p_var_specular /= p_buffers['specular'].shape[1]
+
+            # make a new batch
+            batch_G = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    'kpcn_diffuse_in': batch['kpcn_diffuse_in'][:, :-1],
+                    'kpcn_specular_in': batch['kpcn_specular_in'][:, :-1],
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+            }
+            batch_P = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    # 'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'][:, :10], batch['kpcn_diffuse_in'][:, -1:], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                    # 'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'][:, :10], batch['kpcn_specular_in'][:, -1:], p_buffers['specular'].mean(1), p_var_specular], 1),
+                    'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'][:, :10], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                    'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'][:, :10], p_buffers['specular'].mean(1), p_var_specular], 1),
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+            }
+        else:
+            assert('should use llpm')
+        
+        # pass denoiser
+        out = self._regress_forward(batch_G, batch_P)
+
+        # make new batch for error estimation
+        if self.error:
+            # batch_err = {
+            #     'diffuse_G': torch.cat([
+            #                             out['diffuse_G'].clone().detach(), 
+            #                             crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse_G']), 
+            #                             crop_like(p_buffers['diffuse'].mean(1).clone().detach(), out['diffuse_G']),
+            #                             crop_like(p_var_diffuse.clone().detach(), out['diffuse_G'])
+            #                             ], dim=1),
+            #     'specular_G': torch.cat([
+            #                             out['specular_G'].clone().detach(), 
+            #                             crop_like(batch['kpcn_specular_in'][:, 10:], out['specular_G']),
+            #                             crop_like(p_buffers['specular'].mean(1).clone().detach(), out['specular_G']),
+            #                             crop_like(p_var_specular.clone().detach(), out['specular_G'])
+            #                             ], dim=1),
+            #     'diffuse_P': torch.cat([
+            #                             out['diffuse_P'].clone().detach(), 
+            #                             crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse_P']), 
+            #                             crop_like(p_buffers['diffuse'].mean(1).clone().detach(), out['diffuse_P']),
+            #                             crop_like(p_var_diffuse.clone().detach(), out['diffuse_P'])
+            #                             ], dim=1),
+            #     'specular_P': torch.cat([
+            #                             out['specular_P'].clone().detach(), 
+            #                             crop_like(batch['kpcn_specular_in'][:, 10:], out['specular_P']),
+            #                             crop_like(p_buffers['specular'].mean(1).clone().detach(), out['specular_P']),
+            #                             crop_like(p_var_specular.clone().detach(), out['specular_P'])
+            #                             ], dim=1),
+            # }
+            batch_err = {
+                'diffuse_G': torch.cat([
+                                        out['diffuse_G'], # 
+                                        crop_like(batch['kpcn_diffuse_in'][:, :3], out['diffuse_G']), # 
+                                        crop_like(batch['kpcn_diffuse_in'][:, 3:4], out['diffuse_G']), 
+                                        crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse_G']), 
+                                        crop_like(p_buffers['diffuse'].mean(1), out['diffuse_G']),
+                                        crop_like(p_var_diffuse, out['diffuse_G'])
+                                        ], dim=1),
+                'specular_G': torch.cat([
+                                        out['specular_G'], # 
+                                        crop_like(batch['kpcn_specular_in'][:, :3], out['specular_G']), #
+                                        crop_like(batch['kpcn_specular_in'][:, 3:4], out['specular_G']), 
+                                        crop_like(batch['kpcn_specular_in'][:, 10:], out['specular_G']), 
+                                        crop_like(p_buffers['specular'].mean(1), out['specular_G']),
+                                        crop_like(p_var_specular, out['specular_G'])
+                                        ], dim=1),
+                'diffuse_P': torch.cat([
+                                        out['diffuse_P'], # 
+                                        crop_like(batch['kpcn_diffuse_in'][:, :3], out['diffuse_P']), #
+                                        crop_like(batch['kpcn_diffuse_in'][:, 3:4], out['diffuse_G']), 
+                                        crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse_P']), 
+                                        crop_like(p_buffers['diffuse'].mean(1), out['diffuse_P']),
+                                        crop_like(p_var_diffuse, out['diffuse_P'])
+                                        ], dim=1),
+                'specular_P': torch.cat([
+                                        out['specular_P'],
+                                        crop_like(batch['kpcn_specular_in'][:, :3], out['specular_P']), # 
+                                        crop_like(batch['kpcn_specular_in'][:, 3:4], out['specular_P']), 
+                                        crop_like(batch['kpcn_specular_in'][:, 10:], out['specular_P']), 
+                                        crop_like(p_buffers['specular'].mean(1), out['specular_P']),
+                                        crop_like(p_var_specular, out['specular_P'])
+                                        ], dim=1),
+            }
+            err = self._error_forward(batch_err)
+        else:
+            b, c, h, w = out['diffuse_G'].shape
+            # print(b, c, h, w)
+            # err = {
+            #     'diffuse_G': torch.cuda.FloatTensor((b, 1 ,h, w)).fill_(0),
+            #     'specular_G': torch.cuda.FloatTensor((b, 1 ,h, w)).fill_(0),
+            #     'diffuse_P': torch.cuda.FloatTensor((b, 1 ,h, w)).fill_(0),
+            #     'specular_P': torch.cuda.FloatTensor((b, 1 ,h, w)).fill_(0),
+            # }
+            # err = {
+            #     'diffuse_G': torch.zeros((b, 1, h, w)).cuda(),
+            #     'specular_G': torch.zeros((b, 1, h, w)).cuda(),
+            #     'diffuse_P': torch.zeros((b, 1, h, w)).cuda(),
+            #     'specular_P': torch.zeros((b, 1, h, w)).cuda()
+            # }
+            # print('calculate gt and put it in')
+            # print(self.error_type)
+            gt_err_diff_G = score_map(out['diffuse_G'].detach(), crop_like(batch['target_diffuse'], out['diffuse_G']), error_type=self.error_type)
+            gt_err_diff_P = score_map(out['diffuse_P'].clone().detach(), crop_like(batch['target_diffuse'], out['diffuse_P']), error_type=self.error_type)
+            gt_err_spec_G = score_map(out['specular_G'].clone().detach(), crop_like(batch['target_specular'], out['specular_G']), error_type=self.error_type)
+            gt_err_spec_P = score_map(out['specular_P'].clone().detach(), crop_like(batch['target_specular'], out['specular_P']), error_type=self.error_type)
+            err = {
+                'diffuse_G': gt_err_diff_G,
+                'specular_G': gt_err_spec_G,
+                'diffuse_P': gt_err_diff_P,
+                'specular_P': gt_err_spec_P
+            }
+
+        # make new batch for interpolation
+        batch_interp = {
+            'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
+                                err['diffuse_G'].clone().detach(), 
+                                out['diffuse_P'].clone().detach(),
+                                err['diffuse_P'].clone().detach()], dim=1),
+            'specular': torch.cat([out['specular_G'].clone().detach(), 
+                                err['specular_G'].clone().detach(), 
+                                out['specular_P'].clone().detach(),
+                                err['specular_P'].clone().detach()], dim=1)
+        }
+        interpolation_W = self._interpolation_forward(batch_interp)
+
+        # apply interpolation
+        if interpolation_W['diffuse'].shape[1] > 1:
+            final_diffuse = out['diffuse_G'] * interpolation_W['diffuse'][:, :1] + out['diffuse_P'] * interpolation_W['diffuse'][:, 1:]
+            final_specular = out['specular_G'] * interpolation_W['specular'][:, :1] + out['specular_P'] * interpolation_W['specular'][:, 1:]
+        else:
+            final_diffuse = out['diffuse_G'] * interpolation_W['diffuse'] + out['diffuse_P'] * (1.0 -interpolation_W['diffuse'])
+            final_specular = out['specular_G'] * interpolation_W['specular'] + out['specular_P'] * (1.0 - interpolation_W['specular'])
+        final_radiance = final_diffuse * crop_like(batch['kpcn_albedo'], final_diffuse) + torch.exp(final_specular) - 1.0
+
+        err_diffuse_G, err_specular_G = err['diffuse_G'], err['specular_G']
+        err_diffuse_P, err_specular_P = err['diffuse_P'], err['specular_P']
+        rad_dict = {
+            'g_radiance': out['radiance_G'], 'g_diffuse': out['diffuse_G'], 'g_specular': out['specular_G'],
+            'p_radiance': out['radiance_P'], 'p_diffuse': out['diffuse_P'], 'p_specular': out['specular_P'],
+            'radiance': final_radiance, 'diffuse': final_diffuse, 'specular': final_specular
+            }
+        kernel_dict = {'diffuse': None,
+                      'specular': None}
+        
+        tgt_total = crop_like(batch['target_total'], final_radiance)
+        tgt_diffuse = crop_like(batch['target_diffuse'], err_diffuse_G)
+        tgt_specular = crop_like(batch['target_specular'], err_specular_G)
+        # in_diffuse = crop_like(batch['kpcn_diffuse_buffer'], err_diffuse)
+        # in_specular = crop_like(batch['kpcn_specular_buffer'], err_specular)
+        gt_err_diff_G = score_map(out['diffuse_G'].clone().detach(), tgt_diffuse, error_type = self.error_type)
+        gt_err_diff_P = score_map(out['diffuse_P'].clone().detach(), tgt_diffuse, error_type = self.error_type)
+        gt_err_spec_G = score_map(out['specular_G'].clone().detach(), tgt_specular, error_type = self.error_type)
+        gt_err_spec_P = score_map(out['specular_P'].clone().detach(), tgt_specular, error_type = self.error_type)
+
+        L_total = self.loss_funcs['l_test'](final_radiance, tgt_total)
+        L_diff_err_G = self.loss_funcs['l_error'](err['diffuse_G'], gt_err_diff_G)
+        L_diff_err_P = self.loss_funcs['l_error'](err['diffuse_P'], gt_err_diff_P)
+        L_spec_err_G = self.loss_funcs['l_error'](err['specular_G'], gt_err_spec_G)
+        L_spec_err_P = self.loss_funcs['l_error'](err['specular_P'], gt_err_spec_P)
+        L_diff_err = L_diff_err_G + L_diff_err_P
+        L_spec_err = L_spec_err_G + L_spec_err_P
+
+        score_dict = {
+            's_diffuse_G': err_diffuse_G, 's_specular_G': err_specular_G,
+            's_diffuse_P': err_diffuse_P, 's_specular_P': err_specular_P,
+            's_gt_diffuse_G': gt_err_diff_G, 's_gt_specular_G': gt_err_spec_G,
+            's_gt_diffuse_P': gt_err_diff_P, 's_gt_specular_P': gt_err_spec_P
+        }
+        if interpolation_W['diffuse'].shape[1] > 1:
+            score_dict['weight_diffuse_G'] = interpolation_W['diffuse'][:, :1]
+            score_dict['weight_diffuse_P'] = interpolation_W['diffuse'][:, 1:]
+            score_dict['weight_specular_G'] = interpolation_W['specular'][:, :1]
+            score_dict['weight_specular_P'] = interpolation_W['specular'][:, 1:]
+
+        if self.m_losses['m_val'] == 0.0 and self.m_losses['m_val'].device != L_total.device:
+            self.m_losses['m_val'] = torch.tensor(0.0, device=L_total.device)
+        self.m_losses['m_val'] += L_total.detach()
+        if self.error:
+            if self.m_losses['m_val_err_diff'] == 0.0 and self.m_losses['m_val_err_diff'].device != L_diff_err.device:
+                self.m_losses['m_val_err_diff'] = torch.tensor(0.0, device=L_diff_err.device)
+            # print(self.m_losses['m_val_err_diff'].device, L_diff_err.device)
+            self.m_losses['m_val_err_diff'] += L_diff_err.detach()
+            if self.m_losses['m_val_err_spec'] == 0.0 and self.m_losses['m_val_err_spec'].device != L_spec_err.device:
+                self.m_losses['m_val_err_spec'] = torch.tensor(0.0, device=L_spec_err.device)
+            self.m_losses['m_val_err_spec'] += L_spec_err.detach()
+        
+
+
+        return final_radiance,  p_buffers, rad_dict, kernel_dict, score_dict
+
+    def get_epoch_summary(self, mode, norm):
+        if mode == 'train':
+            losses = {}
+            print('[][][]', end=' ')
+            for key in self.m_losses:
+                if 'm_val' in key:
+                    continue
+                tr_l_tmp = self.m_losses[key] / (norm * 2)
+                tr_l_tmp *= 1000
+                print('%s: %.3fE-3'%(key, tr_l_tmp), end='\t')
+                losses[key] = tr_l_tmp
+                self.m_losses[key] = torch.tensor(0.0, device=self.m_losses[key].device)
+            print('')
+            return losses #-1.0
+        else:
+            # if not self.error:
+            losses = {}
+            for key in self.m_losses:
+                if 'm_val' not in key:
+                    continue
+                losses[key] = self.m_losses[key].item() / (norm * 2)
+            return losses
+
+
+class EnsembleKPCNInterface(BaseInterface):
+
+    def __init__(self, models, optims, loss_funcs, args, visual=False, use_llpm_buf=False, manif_learn=False, w_manif=0.1, train_branches=True, disentanglement_option="m11r11", w_error=1.0, error_type='L1'):
+        if manif_learn:
+            assert 'backbone_diffuse' in models, "argument `models` dictionary should contain `'backbone_diffuse'` key."
+            assert 'backbone_specular' in models, "argument `models` dictionary should contain `'backbone_specular'` key."
+        assert 'dncnn_G' in models, "argument `models` dictionary should contain `'dncnn_G'` key."
+        assert 'dncnn_P' in models, "argument `models` dictionary should contain `'dncnn_P'` key."
+        # assert 'interpolate' in models, "argument `models` dictionary should contain `interpolation_diffuse` key."
+        # assert 'interpolate_specular' in models, "argument `models` dictionary should contain `interpolation_specular` key."
+        if train_branches:
+            assert 'l_diffuse' in loss_funcs
+            assert 'l_specular' in loss_funcs
+        if manif_learn:
+            assert 'l_manif' in loss_funcs
+        assert 'l_recon' in loss_funcs
+        assert 'l_test' in loss_funcs
+        assert disentanglement_option in ['m11r11', 'm10r01', 'm11r01', 'm10r11']
+        
+        super(EnsembleKPCNInterface, self).__init__(models, optims, loss_funcs, args, visual, use_llpm_buf, manif_learn, w_manif)
+        self.train_branches = train_branches
+        self.disentanglement_option = disentanglement_option
+        self.fix = args.fix
+        self.feature = args.feature
+        self.model_type = args.model_type
+        self.best_err = 1e10
+        self.epoch = 0
+        self.cnt = 0    
+        # self.weight = 1.0
+        self.weight = args.weight
+        self.schedule = args.schedule
+        self.ensemble_branches = args.ensemble_branches
+        self.train_branches = self.ensemble_branches
+
+        # print('ErrorEnsembleKPCN')
+        # print('interpolate', self.interpolate)
+        
+    def __str__(self):
+        return 'EnsembleKPCN'
+
+    def to_train_mode(self):
+        for model_name in self.models:
+            self.models[model_name].train()
+            if self.fix and ('dncnn' in model_name or 'backbone' in model_name):
+                self.models[model_name].eval()
+                # print(model_name, 'eval')
+            assert 'optim_' + model_name in self.optims, '`optim_%s`: an optimization algorithm is not defined.'%(model_name)
+    
+    def preprocess(self, batch=None, use_single=None):
+        assert 'target_total' in batch
+        assert 'target_diffuse' in batch
+        assert 'target_specular' in batch
+        assert 'kpcn_diffuse_in' in batch
+        assert 'kpcn_specular_in' in batch
+        assert 'kpcn_diffuse_buffer' in batch
+        assert 'kpcn_specular_buffer' in batch
+        assert 'kpcn_albedo' in batch
+        if self.use_llpm_buf:
+            assert 'paths' in batch
+
+        self.iters += 1
+    
+    def train_batch(self, batch, grad_hook_mode=False):
+        out_manif = None
+        if self.use_llpm_buf:
+            if not self.fix:
+                self.models['backbone_diffuse'].zero_grad()
+                self.models['backbone_specular'].zero_grad()
+                p_buffers = self._manifold_forward(batch)
+            else:
+                with torch.no_grad():
+                    p_buffers = self._manifold_forward(batch)
+            # print('grad p_buffers', p_buffers['diffuse'].requires_grad)
+            # if self.iters % 1000 == 1:
+            #     pimg = np.mean(np.transpose(p_buffers['diffuse'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
+            #     pimg = np.clip(pimg, 0.0, 1.0)
+            #     plt.imsave('../LLPM_results/pbuf_%s_diffuse.png'%(self.args.model_name), pimg)
+
+            #     pimg = np.mean(np.transpose(p_buffers['specular'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
+            #     pimg = np.clip(pimg, 0.0, 1.0)
+            #     plt.imsave('../LLPM_results/pbuf_%s_specular.png'%(self.args.model_name), pimg)
+            
+            """ Feature disentanglement """
+            _, _, c, _, _ = p_buffers['diffuse'].shape
+            assert c >= 2
+            if self.disentanglement_option == 'm11r11':
+                out_manif = p_buffers
+            elif self.disentanglement_option == 'm10r01':
+                out_manif = {
+                        'diffuse': p_buffers['diffuse'][:,:,c//2:,...],
+                        'specular': p_buffers['specular'][:,:,c//2:,...]
+                }
+                p_buffers = {
+                        'diffuse': p_buffers['diffuse'][:,:,:c//2,...],
+                        'specular': p_buffers['specular'][:,:,:c//2,...]
+                }
+            elif self.disentanglement_option == 'm11r01':
+                out_manif = p_buffers
+                p_buffers = {
+                        'diffuse': p_buffers['diffuse'][:,:,:c//2,...],
+                        'specular': p_buffers['specular'][:,:,:c//2,...]
+                }
+            elif self.disentanglement_option == 'm10r11':
+                out_manif = {
+                        'diffuse': p_buffers['diffuse'][:,:,c//2:,...],
+                        'specular': p_buffers['specular'][:,:,c//2:,...]
+                }
+
+            p_var_diffuse = p_buffers['diffuse'].var(1).mean(1, keepdims=True).detach()
+            p_var_diffuse /= p_buffers['diffuse'].shape[1] # spp
+            p_var_specular = p_buffers['specular'].var(1).mean(1, keepdims=True).detach()
+            p_var_specular /= p_buffers['specular'].shape[1]
+
+            # make a new batch
+            batch_G = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    'kpcn_diffuse_in': batch['kpcn_diffuse_in'][:, :-1],
+                    'kpcn_specular_in': batch['kpcn_specular_in'][:, :-1],
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+            }
+            batch_P = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'][:, :10], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                    'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'][:, :10], p_buffers['specular'].mean(1), p_var_specular], 1),
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+            }
+        else:
+            assert('should use llpm')
+
+                # del p_buffer
+
+        # pass denoiser
+        if not self.fix:
+            self.models['dncnn_G'].zero_grad()
+            self.models['dncnn_P'].zero_grad()
+            out = self._regress_forward(batch_G, batch_P)
+        else:
+            with torch.no_grad():
+                out = self._regress_forward(batch_G, batch_P)
+
+        # print('grad dncnn', out['radiance_G'].requires_grad)
+        
+
+        # make new batch for error estimation
+        if self.ensemble_branches:
+            self.models['interpolate_diffuse'].zero_grad()
+            self.models['interpolate_specular'].zero_grad()
+            if self.feature:
+                # print('use_feature')
+                batch_interp = {
+                    'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
+                                        out['diffuse_P'].clone().detach(),
+                                        # crop_like(batch_G['kpcn_diffuse_in'][:, 10:], out['diffuse_G']),
+                                        crop_like(batch_P['kpcn_diffuse_in'][:, 10:], out['diffuse_P']),
+                                        ], dim=1),
+                    'specular': torch.cat([out['specular_G'].clone().detach(), 
+                                        out['specular_P'].clone().detach(),
+                                        # crop_like(batch_G['kpcn_specular_in'][:, 10:], out['specular_G']),
+                                        crop_like(batch_P['kpcn_specular_in'][:, 10:], out['specular_P']),
+                                        ], dim=1)
+                }
+            else:
+                # print('no_feature')
+                batch_interp = {
+                    'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
+                                        out['diffuse_P'].clone().detach(),
+                                        ], dim=1),
+                    'specular': torch.cat([out['specular_G'].clone().detach(), 
+                                        out['specular_P'].clone().detach(),
+                                        ], dim=1)
+                }
+        else:
+            self.models['interpolate'].zero_grad()
+            if self.feature:
+                # print('use_feature')
+                batch_interp = {
+                    'radiance': torch.cat([torch.log(out['radiance_G'].clone().detach() + 1.0), 
+                                        torch.log(out['radiance_P'].clone().detach() + 1.0),
+                                        crop_like(batch_G['kpcn_diffuse_in'][:, 10:], out['radiance_G']),
+                                        crop_like(batch_P['kpcn_diffuse_in'][:, 10:], out['radiance_P']),
+                                        ], dim=1),
+                }
+            else:
+                # print('no_feature')
+                batch_interp = {
+                    'radiance': torch.cat([
+                                        torch.log(out['radiance_G'].clone().detach() + 1.0), 
+                                        torch.log(out['radiance_P'].clone().detach() + 1.0)
+                                        ], dim=1),
+                }
+        # if self.feature:
+        #     # print('use_feature')
+        #     batch_interp = {
+        #         'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
+        #                             out['diffuse_P'].clone().detach(),
+        #                             crop_like(batch_G['kpcn_diffuse_in'][:, 10:], out['diffuse_G']),
+        #                             crop_like(batch_P['kpcn_diffuse_in'][:, 10:], out['diffuse_P']),
+        #                             ], dim=1),
+        #         'specular': torch.cat([out['specular_G'].clone().detach(), 
+        #                             out['specular_P'].clone().detach(),
+        #                             crop_like(batch_G['kpcn_specular_in'][:, 10:], out['specular_G']),
+        #                             crop_like(batch_P['kpcn_specular_in'][:, 10:], out['specular_P']),
+        #                             ], dim=1)
+        #     }
+        # else:
+        #     # print('no_feature')
+        #     batch_interp = {
+        #         'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
+        #                             out['diffuse_P'].clone().detach(),
+        #                             ], dim=1),
+        #         'specular': torch.cat([out['specular_G'].clone().detach(), 
+        #                             out['specular_P'].clone().detach(),
+        #                             ], dim=1)
+        #     }
+        
+        interpolation_W = self._interpolation_forward(batch_interp)
+
+        # apply interpolation
+        if self.ensemble_branches:
+            # print('ensemble_branches!!')
+            if interpolation_W['diffuse'].shape[1] > 1:
+                # print(interpolation_W['diffuse'][:, :1])
+                final_diffuse = out['diffuse_G'] * interpolation_W['diffuse'][:, :1] + out['diffuse_P'] * interpolation_W['diffuse'][:, 1:]
+                final_specular = out['specular_G'] * interpolation_W['specular'][:, :1] + out['specular_P'] * interpolation_W['specular'][:, 1:]
+            else:
+                final_diffuse = out['diffuse_G'] * interpolation_W['diffuse'] + out['diffuse_P'] * (1.0 -interpolation_W['diffuse'])
+                final_specular = out['specular_G'] * interpolation_W['specular'] + out['specular_P'] * (1.0 - interpolation_W['specular'])
+            final_radiance = final_diffuse * crop_like(batch['kpcn_albedo'], final_diffuse) + torch.exp(final_specular) - 1.0
+            out['diffuse_I'] = final_diffuse
+            out['specular_I'] = final_specular
+            out['radiance_I'] = final_radiance
+        else:
+            if interpolation_W['radiance'].shape[1] > 1:
+                final_radiance = out['radiance_G'] * interpolation_W['radiance'][:, :1] + out['radiance_P'] * interpolation_W['radiance'][:, 1:]
+            else:
+                final_radiance = out['radiance_G'] * interpolation_W['radiance'] + out['radiance_P'] * (1.0 -interpolation_W['radiance'])
+            out['diffuse_I'] = None
+            out['specular_I'] = None
+            out['radiance_I'] = final_radiance
+        loss_dict = self._backward(batch, out, out_manif)
+
+        if grad_hook_mode: # do not update this model
+            return
+
+        self._logging(loss_dict)
+        # del loss_dict
+        self._optimization()
+
+    def _manifold_forward(self, batch):
+        p_buffer_diffuse = self.models['backbone_diffuse'](batch)
+        p_buffer_specular = self.models['backbone_specular'](batch)
+        p_buffers = {
+            'diffuse': p_buffer_diffuse,
+            'specular': p_buffer_specular
+        }
+        return p_buffers
+
+    def _regress_forward(self, batch_G, batch_P):
+        out_G = self.models['dncnn_G'](batch_G)
+        out_P = self.models['dncnn_P'](batch_P)
+        out = {
+            'radiance_G' : out_G['radiance'],
+            'diffuse_G': out_G['diffuse'],
+            'specular_G': out_G['specular'],
+            'radiance_P': out_P['radiance'],
+            'diffuse_P': out_P['diffuse'],
+            'specular_P': out_P['specular']
+        }
+        return out
+
+    def _interpolation_forward(self, batch):
+        if self.ensemble_branches:
+            interp_W_diffuse = self.models['interpolate_diffuse'](batch['diffuse'])
+            interp_W_specular = self.models['interpolate_specular'](batch['specular'])
+            interp_W = {
+                'diffuse': interp_W_diffuse,
+                'specular': interp_W_specular
+            }
+        else:
+            interp_W_radiance = self.models['interpolate'](batch['radiance'])
+            interp_W = {
+                'radiance': interp_W_radiance,
+            }
+        return interp_W
+
+    def _backward(self, batch, out, p_buffers):
+        assert 'radiance_G' in out
+        assert 'diffuse_G' in out
+        assert 'specular_G' in out
+        assert 'radiance_P' in out
+        assert 'diffuse_P' in out
+        assert 'specular_P' in out
+        assert 'radiance_I' in out
+        assert 'diffuse_I' in out
+        assert 'specular_I' in out
+        total_G, diffuse_G, specular_G = out['radiance_G'], out['diffuse_G'], out['specular_G']
+        total_P, diffuse_P, specular_P = out['radiance_P'], out['diffuse_P'], out['specular_P']
+        tgt_diffuse = crop_like(batch['target_diffuse'], diffuse_G)
+        tgt_specular = crop_like(batch['target_specular'], specular_G)
+        
+        loss_dict = {}
+
+        if self.train_branches: # training diffuse and specular branches
+
+            total_I, diffuse_I, specular_I = out['radiance_I'], out['diffuse_I'], out['specular_I']
+            with torch.no_grad():
+                L_diffuse_G = self.loss_funcs['l_diffuse'](diffuse_G, tgt_diffuse)
+                L_diffuse_P = self.loss_funcs['l_diffuse'](diffuse_P, tgt_diffuse)
+                L_specular_G = self.loss_funcs['l_specular'](specular_G, tgt_specular)
+                L_specular_P = self.loss_funcs['l_specular'](specular_P, tgt_specular)
+            L_diffuse_I = self.loss_funcs['l_diffuse'](diffuse_I, tgt_diffuse)
+            L_specular_I = self.loss_funcs['l_specular'](specular_I, tgt_specular)
+            loss_dict['l_diffuse_I'] = L_diffuse_I.detach()
+            loss_dict['l_specular_I'] = L_specular_I.detach()
+            # L_diffuse = L_diffuse_I
+            # L_specular = L_specular_I
+ 
+            loss_dict['l_diffuse_G'] = L_diffuse_G.detach()
+            loss_dict['l_diffuse_P'] = L_diffuse_P.detach()
+            
+            loss_dict['l_specular_G'] = L_specular_G.detach()
+            loss_dict['l_specular_P'] = L_specular_P.detach()
+            
+            
+            # TODO Write code of schedule learning & etc...
+            if self.fix: # if denoisers are fixed or finetuned
+                L_diffuse = L_diffuse_I
+                L_specular = L_specular_I
+            else: # weight 0 if not using / weight can be scheduled
+                # L_diffuse = L_diffuse_I + (L_diffuse_G + L_diffuse_P) * self.weight
+                # L_specular = L_specular_I + (L_specular_G + L_specular_P) * self.weight
+                L_diffuse = L_diffuse_I
+                L_specular = L_specular_I
+            # L_diffuse = L_diffuse_G + L_diffuse_P + L_diffuse_I
+            # L_specular = L_specular_G + L_specular_P + L_specular_I
+            # if self.weight > 0:
+            #     L_diffuse = L_diffuse_I + (L_diffuse_G + L_diffuse_P) * self.weight
+            #     L_specular = L_specular_I + (L_specular_G + L_specular_P) * self.weight
+
+            if self.manif_learn:
+                p_buffer_diffuse = crop_like(p_buffers['diffuse'], diffuse_P)
+                L_manif_diffuse = self.loss_funcs['l_manif'](p_buffer_diffuse, tgt_diffuse)
+                L_diffuse += L_manif_diffuse * self.w_manif
+
+                p_buffer_specular = crop_like(p_buffers['specular'], specular_P)
+                L_manif_specular = self.loss_funcs['l_manif'](p_buffer_specular, tgt_specular)
+                L_specular += L_manif_specular * self.w_manif
+
+                loss_dict['l_manif_diffuse'] = L_manif_diffuse.detach()
+                loss_dict['l_manif_specular'] = L_manif_specular.detach()
+
+                L_diffuse += L_manif_diffuse * self.w_manif
+                L_specular += L_manif_specular * self.w_manif
+
+            L_diffuse.backward()
+            L_specular.backward()
+
+        else: # single training
+            total_I = out['radiance_I']
+            tgt_total = crop_like(batch['target_total'], total_I)
+            L_total = self.loss_funcs['l_recon'](total_I, tgt_total)
+            loss_dict['l_total'] = L_total.detach()
+
+            if self.manif_learn:
+                p_buffer_diffuse = crop_like(p_buffers['diffuse'], diffuse_P)
+                L_manif_diffuse = self.loss_funcs['l_manif'](p_buffer_diffuse, tgt_diffuse)
+
+                p_buffer_specular = crop_like(p_buffers['specular'], specular_P)
+                L_manif_specular = self.loss_funcs['l_manif'](p_buffer_specular, tgt_specular)
+
+                loss_dict['l_manif_diffuse'] = L_manif_diffuse.detach()
+                loss_dict['l_manif_specular'] = L_manif_specular.detach()
+
+                L_total += (L_manif_diffuse + L_manif_specular) * self.w_manif
+
+            L_total.backward()
+
+        with torch.no_grad():
+            tgt_total = crop_like(batch['target_total'], total_I)
+            loss_dict['rmse'] = self.loss_funcs['l_test'](total_I, tgt_total).detach()
+        self.cnt += 1
+
+    
+        
+        return loss_dict
+
+    def _logging(self, loss_dict):
+        """ error handling """
+        for key in loss_dict:
+            if not torch.isfinite(loss_dict[key]).all():
+                raise RuntimeError("%s: Non-finite loss at train time."%(key))
+        
+        # (NOTE: modified for each model)
+        for model_name in self.models:
+            nn.utils.clip_grad_value_(self.models[model_name].parameters(), clip_value=1.0)
+
+        """ logging """
+        for key in loss_dict:
+            if 'm_' + key not in self.m_losses:
+                self.m_losses['m_' + key] = torch.tensor(0.0, device=loss_dict[key].device)
+            self.m_losses['m_' + key] += loss_dict[key]
+    
+    def _optimization(self):
+        for model_name in self.models:
+            if self.fix and ('dncnn' in model_name or 'backbone' in model_name): continue 
+            # print('optimiziation', model_name)
+            self.optims['optim_' + model_name].step()
+
+    def to_eval_mode(self):
+        for model_name in self.models:
+            self.models[model_name].eval()
+        self.m_losses['m_val'] = torch.tensor(0.0)
+        # if self.error:
+        #     self.m_losses['m_val_err_diff'] = torch.tensor(0.0)
+        #     self.m_losses['m_val_err_spec'] = torch.tensor(0.0)
+
+    def validate_batch(self, batch, mode=None):
+        p_buffers = None
+
+        if self.use_llpm_buf:
+            self.models['backbone_diffuse'].zero_grad()
+            self.models['backbone_specular'].zero_grad()
+            p_buffers = self._manifold_forward(batch)
+
+            # if self.iters % 1000 == 1:
+            #     pimg = np.mean(np.transpose(p_buffers['diffuse'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
+            #     pimg = np.clip(pimg, 0.0, 1.0)
+            #     plt.imsave('../LLPM_results/pbuf_%s_diffuse.png'%(self.args.model_name), pimg)
+
+            #     pimg = np.mean(np.transpose(p_buffers['specular'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
+            #     pimg = np.clip(pimg, 0.0, 1.0)
+            #     plt.imsave('../LLPM_results/pbuf_%s_specular.png'%(self.args.model_name), pimg)
+            
+            """ Feature disentanglement """
+            _, _, c, _, _ = p_buffers['diffuse'].shape
+            assert c >= 2
+            if self.disentanglement_option == 'm11r11':
+                out_manif = p_buffers
+            elif self.disentanglement_option == 'm10r01':
+                out_manif = {
+                        'diffuse': p_buffers['diffuse'][:,:,c//2:,...],
+                        'specular': p_buffers['specular'][:,:,c//2:,...]
+                }
+                p_buffers = {
+                        'diffuse': p_buffers['diffuse'][:,:,:c//2,...],
+                        'specular': p_buffers['specular'][:,:,:c//2,...]
+                }
+            elif self.disentanglement_option == 'm11r01':
+                out_manif = p_buffers
+                p_buffers = {
+                        'diffuse': p_buffers['diffuse'][:,:,:c//2,...],
+                        'specular': p_buffers['specular'][:,:,:c//2,...]
+                }
+            elif self.disentanglement_option == 'm10r11':
+                out_manif = {
+                        'diffuse': p_buffers['diffuse'][:,:,c//2:,...],
+                        'specular': p_buffers['specular'][:,:,c//2:,...]
+                }
+
+            p_var_diffuse = p_buffers['diffuse'].var(1).mean(1, keepdims=True).detach()
+            p_var_diffuse /= p_buffers['diffuse'].shape[1] # spp
+            p_var_specular = p_buffers['specular'].var(1).mean(1, keepdims=True).detach()
+            p_var_specular /= p_buffers['specular'].shape[1]
+
+            # make a new batch
+            batch_G = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    'kpcn_diffuse_in': batch['kpcn_diffuse_in'][:, :-1],
+                    'kpcn_specular_in': batch['kpcn_specular_in'][:, :-1],
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+            }
+            batch_P = {
+                    'target_total': batch['target_total'],
+                    'target_diffuse': batch['target_diffuse'],
+                    'target_specular': batch['target_specular'],
+                    'kpcn_diffuse_in': torch.cat([batch['kpcn_diffuse_in'][:, :10], p_buffers['diffuse'].mean(1), p_var_diffuse], 1),
+                    'kpcn_specular_in': torch.cat([batch['kpcn_specular_in'][:, :10], p_buffers['specular'].mean(1), p_var_specular], 1),
+                    'kpcn_diffuse_buffer': batch['kpcn_diffuse_buffer'],
+                    'kpcn_specular_buffer': batch['kpcn_specular_buffer'],
+                    'kpcn_albedo': batch['kpcn_albedo'],
+            }
+        else:
+            assert('should use llpm')
+        
+        # pass denoiser
+        out = self._regress_forward(batch_G, batch_P)
+
+        # make new batch for interpolation
+        if self.train_branches:
+            if self.feature:
+                # print('use_feature')
+                batch_interp = {
+                    'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
+                                        out['diffuse_P'].clone().detach(),
+                                        # crop_like(batch_G['kpcn_diffuse_in'][:, 10:], out['diffuse_G']),
+                                        crop_like(batch_P['kpcn_diffuse_in'][:, 10:], out['diffuse_P']),
+                                        ], dim=1),
+                    'specular': torch.cat([out['specular_G'].clone().detach(), 
+                                        out['specular_P'].clone().detach(),
+                                        # crop_like(batch_G['kpcn_specular_in'][:, 10:], out['specular_G']),
+                                        crop_like(batch_P['kpcn_specular_in'][:, 10:], out['specular_P']),
+                                        ], dim=1)
+                }
+            else:
+                # print('no_feature')
+                batch_interp = {
+                    'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
+                                        out['diffuse_P'].clone().detach(),
+                                        ], dim=1),
+                    'specular': torch.cat([out['specular_G'].clone().detach(), 
+                                        out['specular_P'].clone().detach(),
+                                        ], dim=1)
+                }
+        else:
+            if self.feature:
+                # print('use_feature')
+                batch_interp = {
+                    'radiance': torch.cat([out['radiance_G'].clone().detach(), 
+                                        out['radiance_P'].clone().detach(),
+                                        crop_like(batch_G['kpcn_diffuse_in'][:, 10:], out['radiance_G']),
+                                        crop_like(batch_P['kpcn_diffuse_in'][:, 10:], out['radiance_P']),
+                                        ], dim=1),
+                }
+            else:
+                # print('no_feature')
+                batch_interp = {
+                    'radiance': torch.cat([out['radiance_G'].clone().detach(),
+                                        out['radiance_P'].clone().detach(),
+                                        ], dim=1),
+                }
+
+        interpolation_W = self._interpolation_forward(batch_interp)
+
+        # apply interpolation
+        if self.train_branches:
+            if interpolation_W['diffuse'].shape[1] > 1:
+                final_diffuse = out['diffuse_G'] * interpolation_W['diffuse'][:, :1] + out['diffuse_P'] * interpolation_W['diffuse'][:, 1:]
+                final_specular = out['specular_G'] * interpolation_W['specular'][:, :1] + out['specular_P'] * interpolation_W['specular'][:, 1:]
+            else:
+                final_diffuse = out['diffuse_G'] * interpolation_W['diffuse'] + out['diffuse_P'] * (1.0 -interpolation_W['diffuse'])
+                final_specular = out['specular_G'] * interpolation_W['specular'] + out['specular_P'] * (1.0 - interpolation_W['specular'])
+            final_radiance = final_diffuse * crop_like(batch['kpcn_albedo'], final_diffuse) + torch.exp(final_specular) - 1.0
+            out['diffuse_I'] = final_diffuse
+            out['specular_I'] = final_specular
+            out['radiance_I'] = final_radiance
+        else:
+            if interpolation_W['radiance'].shape[1] > 1:
+                final_radiance = out['radiance_G'] * interpolation_W['radiance'][:, :1] + out['radiance_P'] * interpolation_W['radiance'][:, 1:]
+            else:
+                final_radiance = out['radiance_G'] * interpolation_W['radiance'] + out['radiance_P'] * (1.0 -interpolation_W['radiance'])
+            final_diffuse, final_specular = None, None
+
+        rad_dict = {
+            'g_radiance': out['radiance_G'], 'g_diffuse': out['diffuse_G'], 'g_specular': out['specular_G'],
+            'p_radiance': out['radiance_P'], 'p_diffuse': out['diffuse_P'], 'p_specular': out['specular_P'],
+            'radiance': final_radiance, 'diffuse': final_diffuse, 'specular': final_specular
+            }
+        kernel_dict = {'diffuse': None,
+                      'specular': None}
+        
+        tgt_total = crop_like(batch['target_total'], final_radiance)
+
+        L_total = self.loss_funcs['l_test'](final_radiance, tgt_total)
+
+        score_dict = {}
+        if self.train_branches:
+            if interpolation_W['diffuse'].shape[1] > 1:
+                score_dict['weight_diffuse_G'] = interpolation_W['diffuse'][:, :1]
+                score_dict['weight_diffuse_P'] = interpolation_W['diffuse'][:, 1:]
+                score_dict['weight_specular_G'] = interpolation_W['specular'][:, :1]
+                score_dict['weight_specular_P'] = interpolation_W['specular'][:, 1:]
+        else:
+            if interpolation_W['radiance'].shape[1] > 1:
+                score_dict['weight_diffuse_G'] = interpolation_W['radiance'][:, :1]
+                score_dict['weight_diffuse_P'] = interpolation_W['radiance'][:, 1:]
+
+        if self.m_losses['m_val'] == 0.0 and self.m_losses['m_val'].device != L_total.device:
+            self.m_losses['m_val'] = torch.tensor(0.0, device=L_total.device)
+        self.m_losses['m_val'] += L_total.detach()
+
+        return final_radiance,  p_buffers, rad_dict, kernel_dict, score_dict
+
+    def get_epoch_summary(self, mode, norm):
+        if mode == 'train':
+            losses = {}
+            print('[][][]', end=' ')
+            for key in self.m_losses:
+                if 'm_val' in key:
+                    continue
+                tr_l_tmp = self.m_losses[key] / (norm * 2)
+                tr_l_tmp *= 1000
+                print('%s: %.3fE-3'%(key, tr_l_tmp), end='\t')
+                losses[key] = tr_l_tmp
+                self.m_losses[key] = torch.tensor(0.0, device=self.m_losses[key].device)
+            print('')
+            return losses #-1.0
+        else:
+            # if not self.error:
+            losses = {}
+            for key in self.m_losses:
+                if 'm_val' not in key:
+                    continue
+                losses[key] = self.m_losses[key].item() / (norm * 2)
+            return losses

@@ -3,6 +3,166 @@ import torch.nn as nn
 import torch.nn.functional as F
 from support.utils import crop_like
 
+'''
+Modules for making AdvMCD (Xu et al. 2019)
+
+'''
+
+class CFMLayer(nn.Module):
+    def __init__(self, ch=64):
+        super(CFMLayer, self).__init__()
+        self.CFM_scale_conv0 = nn.Conv2d(ch//2, ch//2, 1)
+        self.CFM_scale_conv1 = nn.Conv2d(ch//2, ch, 1)
+        self.CFM_shift_conv0 = nn.Conv2d(ch//2, ch//2, 1)
+        self.CFM_shift_conv1 = nn.Conv2d(ch//2, ch, 1)
+
+    def forward(self, x):
+        # # x[0]: fea; x[1]: cond
+        scale = self.CFM_scale_conv1(F.leaky_relu(self.CFM_scale_conv0(x[1]), 0.1, inplace=True))
+        shift = self.CFM_shift_conv1(F.leaky_relu(self.CFM_shift_conv0(x[1]), 0.1, inplace=True))
+        return x[0] * (scale + 1) + shift
+
+
+class ResBlock_CFM(nn.Module):
+    def __init__(self, ch=64):
+        super(ResBlock_CFM, self).__init__()
+        self.CFM0 = CFMLayer(ch)
+        self.conv0 = nn.Conv2d(ch, ch, 3, 1, 1)
+        self.CFM1 = CFMLayer(ch)
+        self.conv1 = nn.Conv2d(ch, ch, 3, 1, 1)
+
+    def forward(self, x):
+        # x[0]: fea; x[1]: cond
+        fea = self.CFM0(x)
+        fea = F.relu(self.conv0(fea), inplace=True)
+        fea = self.CFM1((fea, x[1]))
+        fea = self.conv1(fea)
+        return (x[0] + fea, x[1])
+
+
+class Generator(nn.Module):
+    """
+    Denoising model(i.e., Generator) based on direct prediction (Xu et al. 2019)
+    https://github.com/mcdenoising/AdvMCDenoise/blob/master/codes/models/arch/generator_cfm.py
+    """
+    def __init__(self, res_ch=64, cond_ch=128):
+        super(Generator, self).__init__()
+        self.conv0 = nn.Conv2d(3, res_ch, 3, 1, 1)
+
+        CFM_branch = []
+        for i in range(16):
+            CFM_branch.append(ResBlock_CFM())
+        CFM_branch.append(CFMLayer())
+        CFM_branch.append(nn.Conv2d(res_ch, res_ch, 3, 1, 1))
+        self.CFM_branch = nn.Sequential(*CFM_branch)
+
+        self.Final_stage = nn.Sequential(
+            nn.Conv2d(res_ch, res_ch, 3, 1, 1),
+            nn.ReLU(True),
+            nn.Conv2d(res_ch, 3, 3, 1, 1),
+            nn.ReLU(True)
+        )
+
+        self.Condition_process = nn.Sequential(
+            nn.Conv2d(7, cond_ch, 3, 1, 1),
+            nn.LeakyReLU(0.1, True),
+            nn.Conv2d(cond_ch, cond_ch, 1),
+            nn.LeakyReLU(0.1, True),
+            nn.Conv2d(cond_ch, cond_ch, 1),
+            nn.LeakyReLU(0.1, True),
+            nn.Conv2d(cond_ch, cond_ch, 1),
+            nn.LeakyReLU(0.1, True),
+            nn.Conv2d(cond_ch, 32, 1)
+        )
+
+
+    def forward(self, x):
+        # x[0]: img; x[1]: seg
+        cond = self.Condition_process(x[1]) #CHANGED
+        
+        fea = self.conv0(x[0])
+        res = self.CFM_branch((fea, cond))
+        fea = fea + res
+        out = self.Final_stage(fea)
+        return out
+
+
+
+class Discriminator(nn.Module):
+    '''
+    Discriminator based on VGG with input size of 128*128 (Xu et al. 2019)
+    https://github.com/mcdenoising/AdvMCDenoise/blob/master/codes/models/arch/discriminator_dispatcher.py
+    '''
+    def __init__(self, in_nc=3, base_nf=64, norm_type='batch', act_type='leakyrelu', mode='CNA'):
+        super(Discriminator, self).__init__()
+        # features
+        # hxw, c
+        # 128, 64
+     
+        def conv_block(in_nc, out_nc, kernel_size, stride=1, dilation=1, groups=1, bias=True, \
+               pad_type='zero', norm_type=None, act_type='relu', mode='CNA'):
+            '''
+            Conv layer with padding, normalization, activation
+            mode: CNA --> Conv -> Norm -> Act
+                NAC --> Norm -> Act --> Conv (Identity Mappings in Deep Residual Networks, ECCV16)
+            '''
+            assert mode in ['CNA', 'NAC', 'CNAC'], 'Wong conv mode [{:s}]'.format(mode)
+            # padding = get_valid_padding(kernel_size, dilation)
+            # p = pad(pad_type, padding) if pad_type and pad_type != 'zero' else None
+            # padding = padding if pad_type == 'zero' else 0
+            padding = (kernel_size + (kernel_size - 1) * (dilation - 1) - 1) // 2
+
+            c = nn.Conv2d(in_nc, out_nc, kernel_size=kernel_size, stride=stride, padding=padding, \
+                    dilation=dilation, bias=bias, groups=groups)
+            a = nn.LeakyReLU(0.2, inplace=True)
+            n = nn.BatchNorm2d(out_nc, affine=True)
+            # return sequential(p, c, n, a)
+            return nn.Sequential(c, n, a)
+
+
+        conv0 = conv_block(in_nc, base_nf, kernel_size=3, norm_type=None, act_type=act_type, \
+            mode=mode)
+        conv1 = conv_block(base_nf, base_nf, kernel_size=4, stride=2, norm_type=norm_type, \
+            act_type=act_type, mode=mode)
+        # 64, 64
+        conv2 = conv_block(base_nf, base_nf*2, kernel_size=3, stride=1, norm_type=norm_type, \
+            act_type=act_type, mode=mode)
+        conv3 = conv_block(base_nf*2, base_nf*2, kernel_size=4, stride=2, norm_type=norm_type, \
+            act_type=act_type, mode=mode)
+        # 32, 128
+        conv4 = conv_block(base_nf*2, base_nf*4, kernel_size=3, stride=1, norm_type=norm_type, \
+            act_type=act_type, mode=mode)
+        conv5 = conv_block(base_nf*4, base_nf*4, kernel_size=4, stride=2, norm_type=norm_type, \
+            act_type=act_type, mode=mode)
+        # 16, 256
+        conv6 = conv_block(base_nf*4, base_nf*8, kernel_size=3, stride=1, norm_type=norm_type, \
+            act_type=act_type, mode=mode)
+        conv7 = conv_block(base_nf*8, base_nf*8, kernel_size=4, stride=2, norm_type=norm_type, \
+            act_type=act_type, mode=mode)
+        # 8, 512
+        conv8 = conv_block(base_nf*8, base_nf*8, kernel_size=3, stride=1, norm_type=norm_type, \
+            act_type=act_type, mode=mode)
+        conv9 = conv_block(base_nf*8, base_nf*8, kernel_size=4, stride=2, norm_type=norm_type, \
+            act_type=act_type, mode=mode)
+        # 4, 512
+        self.features = nn.Sequential(conv0, conv1, conv2, conv3, conv4, conv5, conv6, conv7, conv8,\
+            conv9)
+
+        # classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(512 * 4 * 4, 100), nn.LeakyReLU(0.2, True), nn.Linear(100, 1))
+
+    def forward(self, x):
+        x = self.features(x)
+        x = x.view(x.size(0), -1)
+        x = self.classifier(x)
+        return x
+
+
+'''
+Modules for Making UNet
+'''
+
 class SingleConv(nn.Module):
     """(convolution => [BN] => ReLU) * 2"""
     def __init__(self, in_channels, out_channels, mid_channels=None):
@@ -22,7 +182,7 @@ class SingleConv(nn.Module):
 class DoubleConv(nn.Module):
     """(convolution => [BN] => ReLU) * 2"""
 
-    def __init__(self, in_channels, out_channels, mid_channels=None, activation="relu"):
+    def __init__(self, in_channels, out_channels, mid_channels=None, activation="leaky_relu"):
         super().__init__()
         if not mid_channels:
             mid_channels = out_channels
@@ -41,10 +201,10 @@ class DoubleConv(nn.Module):
         # print(act_fn)
         self.double_conv = nn.Sequential(
             nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(mid_channels),
+            # nn.BatchNorm2d(mid_channels),
             act_fn, #nn.ReLU(inplace=True),
             nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
+            # nn.BatchNorm2d(out_channels),
             act_fn # nn.ReLU(inplace=True)
         )
 
@@ -60,6 +220,7 @@ class Down(nn.Module):
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(2),
             # nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=2, stride=2),
+            # nn.LeakyReLU(inplace=True)
             DoubleConv(in_channels, out_channels, activation=activation)
         )
 
@@ -72,7 +233,7 @@ class StridedDown(nn.Module):
     def __init__(self, in_channels, out_channels, activation="relu"):
         super().__init__()
         self.strided_conv = nn.Sequential(
-            nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=2, stride=2),         # TODO fix!!!
+            nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=2, stride=2),         # TODO fix!!!
             DoubleConv(in_channels, out_channels, activation=activation)
         )
 
@@ -82,16 +243,24 @@ class StridedDown(nn.Module):
 class Up(nn.Module):
     """Upscaling then double conv"""
 
-    def __init__(self, in_channels, out_channels, bilinear=True, activation="relu"):
+    def __init__(self, in_channels, out_channels, bilinear=False, activation="relu"):
         super().__init__()
 
         # if bilinear, use the normal convolutions to reduce the number of channels
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-            self.conv = DoubleConv(in_channels, out_channels, in_channels // 2, activation=activation)
-        else:
-            self.up = nn.Upsample(scale_factor=2, mode='nearest')
             self.conv = DoubleConv(in_channels, out_channels, activation=activation)
+            # self.conv = nn.Sequential(
+            #     nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=2, stride=2),
+            #     nn.LeakyReLU(inplace=True)
+            # )
+        else:
+            self.up = nn.ConvTranspose2d(in_channels, in_channels, kernel_size=2, stride=2)
+            self.conv = DoubleConv(in_channels, out_channels, activation=activation)
+            # self.conv = nn.Sequential(
+            #     nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=2, stride=2),
+            #     nn.LeakyReLU(inplace=True)
+            # )
 
     def forward(self, x1, x2):
         # print('up', x1.shape)
@@ -122,13 +291,11 @@ class OutConv(nn.Module):
 
 
 class SimpleUNet(nn.Module):
-    def __init__(self, n_channels, n_classes, hidden=64, bilinear=True, strided_down=False, activation="relu"):
+    def __init__(self, n_channels, n_classes, hidden=64, bilinear=True, strided_down=True, activation="relu"):
         super(SimpleUNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
         self.bilinear = bilinear
-
-        factor = 2 if bilinear else 1
 
         self.inc = DoubleConv(n_channels, hidden, activation=activation)
         
@@ -137,16 +304,15 @@ class SimpleUNet(nn.Module):
         else:
             down = Down
         
-        self.down1 = down(hidden, hidden, activation=activation)
-        self.down2 = down(hidden, hidden*2, activation=activation)
-        self.down3 = down(hidden*2, hidden*4, activation=activation)
-        self.down4 = down(hidden*4, hidden*8 // factor, activation=activation)
+        self.down1 = down(hidden, hidden*2, activation=activation)
+        self.down2 = down(hidden*2, hidden*4, activation=activation)
+        # self.down3 = down(hidden*2, hidden*4, activation=activation)
+        # self.down4 = down(hidden*4, hidden*4, activation=activation)
 
-        self.up1 = Up(hidden*8, hidden*4 // factor, bilinear, activation=activation)
-        self.up2 = Up(hidden*4, hidden*2 // factor, bilinear, activation=activation)
-        # self.up2 = Up(512, 256 // factor, bilinear)
-        self.up3 = Up(hidden*2, hidden, bilinear, activation=activation)
-        self.up4 = Up(hidden*2, hidden, bilinear, activation=activation)
+        # self.up1 = Up(hidden*8, hidden*4, bilinear, activation=activation)
+        # self.up2 = Up(hi dden*6, hidden*2, bilinear, activation=activation)
+        self.up3 = Up(hidden*6, hidden*2, bilinear, activation=activation)
+        self.up4 = Up(hidden*3, hidden, bilinear, activation=activation)
         self.outc = OutConv(hidden, n_classes)
 
     def forward(self, x):
@@ -156,31 +322,19 @@ class SimpleUNet(nn.Module):
         # print('down x2', x2.shape)
         x3 = self.down2(x2)
         # print('down x3', x3.shape)
-        x4 = self.down3(x3)
+        # x4 = self.down3(x3)
         # print('down x4', x4.shape)
-        x5 = self.down4(x4)
+        # x5 = self.down4(x4)
         # print('down x5', x5.shape)
-        x = self.up1(x5, x4)
-        x = self.up2(x, x3)
+        # x = self.up1(x5, x4)
+        # x = self.up2(x, x3)
         # print('up x3', x.shape)
-        x = self.up3(x, x2)
+        x = self.up3(x3, x2)
         # print('up x2', x.shape)
         x = self.up4(x, x1)
         # print('up x1', x.shape)
         x = self.outc(x)
-        return x, x5
-
-
-# class UNetEncoder(nn.Module):
-#     def __init__(self, n_channels, n_classes, hidden=64, bilinear=True, strided_down=False, activation="relu"):
-#         super(UNetEncoder, self).__init__()
-#         if strided_down:
-#             down = StridedDown 
-#         else:
-#             down = Down
-
-#         self.inc = DoubleConv(n_channels, hidden, activation=activation)
-        
+        return x
     
     
 class RecurrentBlock(nn.Module):
@@ -319,221 +473,3 @@ class RecurrentAE(nn.Module):
         self.u3.reset_hidden(self.inp, dfac=4)
         self.u2.reset_hidden(self.inp, dfac=2)
         self.u1.reset_hidden(self.inp, dfac=1)
-
-# -------------------------------------------------------------------------------------
-#                         START copied and modified by Olivia
-# -------------------------------------------------------------------------------------
-class ModifiedConvChain(nn.Module):
-    """A simple stack of convolution layers.
-
-    Args:
-        ninputs(int): number of input channels.
-        noutputs(int): number of output channels.
-        ksize(int): size of all the convolution kernels.
-        width(int): number of channels per intermediate layer.
-        depth(int): number of intermadiate layers.
-        stride(int): stride of the convolution.
-        pad(bool): if True, maintains spatial resolution by 0-padding,
-            otherwise keep only the valid part.
-        normalize(bool): applies normalization if True.
-        normalization_type(str): either batch or instance.
-        output_type(str): one of linear, relu, leaky_relu, tanh, elu.
-        activation(str): one of relu, leaky_relu, tanh, elu.
-        weight_norm(bool): applies weight normalization if True.
-    """
-    def __init__(self, ninputs, noutputs, ksize=3, width=64, depth=3, stride=1,
-                 pad=True, normalize=False, normalization_type="batch",
-                 output_type="linear", activation="relu", weight_norm=True, p_depth=3, pnet_out=5,
-                 use_skip=False):
-        super(ModifiedConvChain, self).__init__()
-
-        self.use_skip = use_skip
-        if depth <= 0:
-            raise ValueError("negative network depth.")
-
-        if pad:
-            padding = ksize//2
-        else:
-            padding = 0
-
-        self.layers = []
-        for d in range(depth-1):
-            if d == 0:
-                _in = ninputs
-            else:
-                _in = width
-            self.layers.append(
-                ModifiedConvChain._ConvBNRelu(_in, ksize, width, normalize=normalize,
-                                      normalization_type=normalization_type,
-                                      padding=padding, stride=stride,
-                                      activation=activation,
-                                      weight_norm=weight_norm))
-
-        # Rename layers
-        for im, m in enumerate(self.layers):
-            if im == len(self.layers)-1:
-                name = "prediction"
-            else:
-                name = "layer_{}".format(im)
-            self.add_module(name, m)
-        
-        # Last layer
-        if depth > 1:
-            _in = width
-        else:
-            _in = ninputs
-
-        conv = nn.Conv2d(_in, noutputs, ksize, bias=True, padding=padding)
-        if weight_norm:
-            conv = nn.utils.weight_norm(conv)
-        conv.bias.data.zero_()
-        if output_type == "elu" or output_type == "softplus":
-            nn.init.xavier_uniform_(
-                conv.weight.data, nn.init.calculate_gain("relu"))
-        else:
-            nn.init.xavier_uniform_(
-                conv.weight.data, nn.init.calculate_gain(output_type))
-        self.last_layer_gbuf = conv
-
-        conv = nn.Conv2d(_in, noutputs, ksize, bias=True, padding=padding)
-        if weight_norm:
-            conv = nn.utils.weight_norm(conv)
-        conv.bias.data.zero_()
-        if output_type == "elu" or output_type == "softplus":
-            nn.init.xavier_uniform_(
-                conv.weight.data, nn.init.calculate_gain("relu"))
-        else:
-            nn.init.xavier_uniform_(
-                conv.weight.data, nn.init.calculate_gain(output_type))
-        self.last_layer_pbuf = conv
-
-
-        # last activation
-        if output_type == "linear":
-            self.last_activation = nn.Identity()
-        elif output_type == "relu":
-            self.last_activation =  nn.ReLU(inplace=True)
-        elif output_type == "leaky_relu":
-            self.last_activation =  nn.LeakyReLU(inplace=True)
-        elif output_type == "sigmoid":
-            self.last_activation =  nn.Sigmoid()
-        elif output_type == "tanh":
-            self.last_activation =  nn.Tanh()
-        elif output_type == "elu":
-            self.last_activation =  nn.ELU()
-        elif output_type == "softplus":
-            self.last_activation =  nn.Softplus()
-        else:
-            raise ValueError("Unknon output type '{}'".format(output_type))
-
-        # P-buffer network part
-        self.p_layers = nn.ModuleList()
-
-        for i in range(p_depth):
-            if i == 0:
-                n_in = width+pnet_out
-            else:
-                n_in = width
-            p_conv =  ModifiedConvChain._ConvBNRelu(n_in, 3, width, normalize=normalize,
-                                      normalization_type=normalization_type,
-                                      padding=1, stride=1,
-                                      activation=activation,
-                                      weight_norm=weight_norm)
-            self.p_layers.append(p_conv)
-
-    def forward(self, x, gbuf_size=34):
-        # G-buffer part
-        g_features = x[:,:gbuf_size]
-        # for m in self.children():
-        for m in self.layers:
-            # print(g_features.shape)
-            g_features = m(g_features)
-
-        # last layer
-        # print('kernel prediction')
-        g_kernel = self.last_layer_gbuf(g_features)
-        g_kernel = self.last_activation(g_kernel)
-    	
-        # P-buffer part
-        # TODO
-        # iterate over a few conv layers with (p_buffer input and g_features)
-        # return the result together with g_kernel
-        #p_features = g_features + p_buffer #### ? + p buffers??
-        p_buffer = crop_like(x[:,gbuf_size:], g_features)
-        p_features = torch.cat((g_features, p_buffer), dim=1) #### TODO check dimension
-        for layer in self.p_layers:
-            p_features = layer(p_features)
-        
-        # last layer
-        p_kernel = self.last_layer_pbuf(p_features)
-        p_kernel = self.last_activation(p_kernel)
-
-        if self.use_skip:
-            p_kernel += g_kernel
-
-        return g_kernel, p_kernel
-
-    class _ConvBNRelu(nn.Module):
-        """Helper class that implements a simple Conv-(Norm)-Activation group.
-
-        Args:
-            ninputs(int): number of input channels.
-            ksize(int): size of all the convolution kernels.
-            noutputs(int): number of output channels.
-            stride(int): stride of the convolution.
-            pading(int): amount of 0-padding.
-            normalize(bool): applies normalization if True.
-            normalization_type(str): either batch or instance.
-            activation(str): one of relu, leaky_relu, tanh, elu.
-            weight_norm(bool): if True applies weight normalization.
-        """
-        def __init__(self, ninputs, ksize, noutputs, normalize=False,
-                     normalization_type="batch", stride=1, padding=0,
-                     activation="relu", weight_norm=True):
-            super(ModifiedConvChain._ConvBNRelu, self).__init__()
-
-            if activation == "relu":
-                act_fn = nn.ReLU
-            elif activation == "leaky_relu":
-                act_fn = nn.LeakyReLU
-            elif activation == "tanh":
-                act_fn = nn.Tanh
-            elif activation == "elu":
-                act_fn = nn.ELU
-            else:
-                raise ValueError("activation should be one of: "
-                                 "relu, leaky_relu, tanh, elu")
-
-            if normalize:
-                print("nrm", normalization_type)
-                conv = nn.Conv2d(ninputs, noutputs, ksize,
-                                 stride=stride, padding=padding, bias=False)
-                if normalization_type == "batch":
-                    nrm = nn.BatchNorm2d(noutputs)
-                elif normalization_type == "instance":
-                    nrm = nn.InstanceNorm2D(noutputs)
-                else:
-                    raise ValueError(
-                        "Unkown normalization type {}".format(
-                            normalization_type))
-                nrm.bias.data.zero_()
-                nrm.weight.data.fill_(1.0)
-                self.layer = nn.Sequential(conv, nrm, act_fn())
-            else:
-                conv = nn.Conv2d(ninputs, noutputs, ksize,
-                                 stride=stride, padding=padding)
-                if weight_norm:
-                    conv = nn.utils.weight_norm(conv)
-                conv.bias.data.zero_()
-                self.layer = nn.Sequential(conv, act_fn())
-
-            if activation == "elu":
-                nn.init.xavier_uniform_(
-                    conv.weight.data, nn.init.calculate_gain("relu"))
-            else:
-                nn.init.xavier_uniform_(
-                    conv.weight.data, nn.init.calculate_gain(activation))
-
-        def forward(self, x):
-            out = self.layer(x)
-            return out

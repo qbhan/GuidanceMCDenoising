@@ -12,7 +12,7 @@ from tqdm import tqdm
 from support.utils import ToneMap, LinearToSrgb
 
 
-# random.seed('Inyoung Cho')
+random.seed('Kyubeom Han')
 
 def gradient_importance_map(img):
     if len(img.shape) == 3 and img.shape[2] == 3:
@@ -281,7 +281,7 @@ class DenoiseDataset(Dataset):
         }
 
         # Set random seeds
-        # random.seed("Inyoung Cho, Yuchi Huo, Sungeui Yoon @ KAIST")
+        random.seed("Kyubeom Han, Olivia G. Odenthal, Sungeui Yoon @ KAIST")
         random.shuffle(self.gt_files)
 
         # Constants for patch importance sampling
@@ -1196,7 +1196,9 @@ class MSDenoiseDataset(ConcatDataset):
             raise RuntimeError("spp too low to randomize sample count, should"
                                "be at least 2.")
         datasets = []
-        for _s in range(2, spp + 1):
+        if mode == 'train': spps = spp
+        elif mode == 'val': spps = 2
+        for _s in range(spps, spp + 1):
             datasets.append(
                 DenoiseDataset(dir, _s, base_model, mode, batch_size,
                                sampling, use_g_buf, use_sbmc_buf, use_llpm_buf, pnet_out_size,
@@ -1286,6 +1288,8 @@ class FullImageDataset(Dataset):
             else:
                 self.full_ipt = sample['kpcn_buffer']
             self.full_tgt = sample['target_total']
+            self.full_tgt_diff = sample['target_diffuse']
+            self.full_tgt_spec = sample['target_specular']
             assert self.has_hit.shape[-1] == 3, self.has_hit.shape
 
             if visualize:
