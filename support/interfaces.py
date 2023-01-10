@@ -389,7 +389,7 @@ class KPCNInterface(BaseInterface):
         for model_name in self.models:
             self.models[model_name].eval()
         self.m_losses['m_val'] = torch.tensor(0.0)
-        self.m_losses['m_gbuf_val'] = torch.tensor(0.0)
+        # self.m_losses['m_gbuf_val'] = torch.tensor(0.0)
 
     def validate_batch(self, batch, mode=None):
         p_buffers = None
@@ -479,6 +479,9 @@ class KPCNInterface(BaseInterface):
         else:
             return self.m_losses['m_val'].item() / (norm * 2)
 
+    def scheduler():
+        pass
+
 
 class AdvMCDInterface(BaseInterface):
 
@@ -506,10 +509,10 @@ class AdvMCDInterface(BaseInterface):
         self.epoch = 0
         # self.no_gbuf = args.no_gbuf
         self.D_update_ratio = 1
-        self.D_init_iters = 10
+        self.D_init_iters = 0
         self.gan_weight = 5e-3
-        self.gp_weight = 10
-        self.step = args.start_epoch * 14400 #hardcoded
+        self.gp_weight = 10.0
+        # self.step = args.start_epoch * 14400 #hardcoded
         self.random_pt = torch.Tensor(1, 1, 1, 1).cuda()
         
 
@@ -734,7 +737,7 @@ class AdvMCDInterface(BaseInterface):
 
         # denoise
         d_diff = self.models['generator_diffuse']((r_diff, f_diff))
-        d_spec = self.models['generator_diffuse']((r_spec, f_spec))
+        d_spec = self.models['generator_specular']((r_spec, f_spec))
         return dict(diffuse=d_diff, specular=d_spec)
 
 
@@ -759,7 +762,7 @@ class AdvMCDInterface(BaseInterface):
         for model_name in self.models:
             self.models[model_name].eval()
         self.m_losses['m_val'] = torch.tensor(0.0)
-        self.m_losses['m_gbuf_val'] = torch.tensor(0.0)
+        # self.m_losses['m_gbuf_val'] = torch.tensor(0.0)
 
     def validate_batch(self, batch, mode=None):
         p_buffers = None
@@ -839,11 +842,19 @@ class AdvMCDInterface(BaseInterface):
         else:
             return self.m_losses['m_val'].item() / (norm * 2)
 
-    def _backward():
+
+    def scheduler(self):
+        for key in self.optims:
+            if 'sched_' in key:
+                self.optims[key].step()
+
+    def _backward(self):
         pass
 
-    def _optimization():
+    def _optimization(self):
         pass
+
+   
 
 class SBMCInterface(BaseInterface):
 
@@ -1157,14 +1168,7 @@ class EnsembleKPCNInterface(BaseInterface):
         self.best_err = 1e10
         self.epoch = 0
         self.cnt = 0    
-        # self.weight = 1.0
         self.weight = args.weight
-        self.schedule = args.schedule
-        self.ensemble_branches = args.ensemble_branches
-        self.train_branches = self.ensemble_branches
-
-        # print('ErrorEnsembleKPCN')
-        # print('interpolate', self.interpolate)
         
     def __str__(self):
         return 'EnsembleKPCN'
@@ -1281,101 +1285,47 @@ class EnsembleKPCNInterface(BaseInterface):
         
 
         # make new batch for error estimation
-        if self.ensemble_branches:
-            self.models['interpolate_diffuse'].zero_grad()
-            self.models['interpolate_specular'].zero_grad()
-            if self.feature:
-                # print('use_feature')
-                batch_interp = {
-                    'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
-                                        out['diffuse_P'].clone().detach(),
-                                        # crop_like(batch_G['kpcn_diffuse_in'][:, 10:], out['diffuse_G']),
-                                        crop_like(batch_P['kpcn_diffuse_in'][:, 10:], out['diffuse_P']),
-                                        ], dim=1),
-                    'specular': torch.cat([out['specular_G'].clone().detach(), 
-                                        out['specular_P'].clone().detach(),
-                                        # crop_like(batch_G['kpcn_specular_in'][:, 10:], out['specular_G']),
-                                        crop_like(batch_P['kpcn_specular_in'][:, 10:], out['specular_P']),
-                                        ], dim=1)
-                }
-            else:
-                # print('no_feature')
-                batch_interp = {
-                    'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
-                                        out['diffuse_P'].clone().detach(),
-                                        ], dim=1),
-                    'specular': torch.cat([out['specular_G'].clone().detach(), 
-                                        out['specular_P'].clone().detach(),
-                                        ], dim=1)
-                }
+        self.models['interpolate_diffuse'].zero_grad()
+        self.models['interpolate_specular'].zero_grad()
+        if self.feature:
+            # print('use_feature')
+            batch_interp = {
+                'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
+                                    out['diffuse_P'].clone().detach(),
+                                    crop_like(batch_G['kpcn_diffuse_in'][:, 10:], out['diffuse_G']),
+                                    crop_like(batch_P['kpcn_diffuse_in'][:, 10:], out['diffuse_P']),
+                                    ], dim=1),
+                'specular': torch.cat([out['specular_G'].clone().detach(), 
+                                    out['specular_P'].clone().detach(),
+                                    crop_like(batch_G['kpcn_specular_in'][:, 10:], out['specular_G']),
+                                    crop_like(batch_P['kpcn_specular_in'][:, 10:], out['specular_P']),
+                                    ], dim=1)
+            }
         else:
-            self.models['interpolate'].zero_grad()
-            if self.feature:
-                # print('use_feature')
-                batch_interp = {
-                    'radiance': torch.cat([torch.log(out['radiance_G'].clone().detach() + 1.0), 
-                                        torch.log(out['radiance_P'].clone().detach() + 1.0),
-                                        crop_like(batch_G['kpcn_diffuse_in'][:, 10:], out['radiance_G']),
-                                        crop_like(batch_P['kpcn_diffuse_in'][:, 10:], out['radiance_P']),
-                                        ], dim=1),
-                }
-            else:
-                # print('no_feature')
-                batch_interp = {
-                    'radiance': torch.cat([
-                                        torch.log(out['radiance_G'].clone().detach() + 1.0), 
-                                        torch.log(out['radiance_P'].clone().detach() + 1.0)
-                                        ], dim=1),
-                }
-        # if self.feature:
-        #     # print('use_feature')
-        #     batch_interp = {
-        #         'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
-        #                             out['diffuse_P'].clone().detach(),
-        #                             crop_like(batch_G['kpcn_diffuse_in'][:, 10:], out['diffuse_G']),
-        #                             crop_like(batch_P['kpcn_diffuse_in'][:, 10:], out['diffuse_P']),
-        #                             ], dim=1),
-        #         'specular': torch.cat([out['specular_G'].clone().detach(), 
-        #                             out['specular_P'].clone().detach(),
-        #                             crop_like(batch_G['kpcn_specular_in'][:, 10:], out['specular_G']),
-        #                             crop_like(batch_P['kpcn_specular_in'][:, 10:], out['specular_P']),
-        #                             ], dim=1)
-        #     }
-        # else:
-        #     # print('no_feature')
-        #     batch_interp = {
-        #         'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
-        #                             out['diffuse_P'].clone().detach(),
-        #                             ], dim=1),
-        #         'specular': torch.cat([out['specular_G'].clone().detach(), 
-        #                             out['specular_P'].clone().detach(),
-        #                             ], dim=1)
-        #     }
+            # print('no_feature')
+            batch_interp = {
+                'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
+                                    out['diffuse_P'].clone().detach(),
+                                    ], dim=1),
+                'specular': torch.cat([out['specular_G'].clone().detach(), 
+                                    out['specular_P'].clone().detach(),
+                                    ], dim=1)
+            }
         
         interpolation_W = self._interpolation_forward(batch_interp)
 
         # apply interpolation
-        if self.ensemble_branches:
-            # print('ensemble_branches!!')
-            if interpolation_W['diffuse'].shape[1] > 1:
-                # print(interpolation_W['diffuse'][:, :1])
-                final_diffuse = out['diffuse_G'] * interpolation_W['diffuse'][:, :1] + out['diffuse_P'] * interpolation_W['diffuse'][:, 1:]
-                final_specular = out['specular_G'] * interpolation_W['specular'][:, :1] + out['specular_P'] * interpolation_W['specular'][:, 1:]
-            else:
-                final_diffuse = out['diffuse_G'] * interpolation_W['diffuse'] + out['diffuse_P'] * (1.0 -interpolation_W['diffuse'])
-                final_specular = out['specular_G'] * interpolation_W['specular'] + out['specular_P'] * (1.0 - interpolation_W['specular'])
-            final_radiance = final_diffuse * crop_like(batch['kpcn_albedo'], final_diffuse) + torch.exp(final_specular) - 1.0
-            out['diffuse_I'] = final_diffuse
-            out['specular_I'] = final_specular
-            out['radiance_I'] = final_radiance
+        if interpolation_W['diffuse'].shape[1] > 1:
+            # print(interpolation_W['diffuse'][:, :1])
+            final_diffuse = out['diffuse_G'] * interpolation_W['diffuse'][:, :1] + out['diffuse_P'] * interpolation_W['diffuse'][:, 1:]
+            final_specular = out['specular_G'] * interpolation_W['specular'][:, :1] + out['specular_P'] * interpolation_W['specular'][:, 1:]
         else:
-            if interpolation_W['radiance'].shape[1] > 1:
-                final_radiance = out['radiance_G'] * interpolation_W['radiance'][:, :1] + out['radiance_P'] * interpolation_W['radiance'][:, 1:]
-            else:
-                final_radiance = out['radiance_G'] * interpolation_W['radiance'] + out['radiance_P'] * (1.0 -interpolation_W['radiance'])
-            out['diffuse_I'] = None
-            out['specular_I'] = None
-            out['radiance_I'] = final_radiance
+            final_diffuse = out['diffuse_G'] * interpolation_W['diffuse'] + out['diffuse_P'] * (1.0 -interpolation_W['diffuse'])
+            final_specular = out['specular_G'] * interpolation_W['specular'] + out['specular_P'] * (1.0 - interpolation_W['specular'])
+        final_radiance = final_diffuse * crop_like(batch['kpcn_albedo'], final_diffuse) + torch.exp(final_specular) - 1.0
+        out['diffuse_I'] = final_diffuse
+        out['specular_I'] = final_specular
+        out['radiance_I'] = final_radiance
         loss_dict = self._backward(batch, out, out_manif)
 
         if grad_hook_mode: # do not update this model
@@ -1408,18 +1358,12 @@ class EnsembleKPCNInterface(BaseInterface):
         return out
 
     def _interpolation_forward(self, batch):
-        if self.ensemble_branches:
-            interp_W_diffuse = self.models['interpolate_diffuse'](batch['diffuse'])
-            interp_W_specular = self.models['interpolate_specular'](batch['specular'])
-            interp_W = {
-                'diffuse': interp_W_diffuse,
-                'specular': interp_W_specular
-            }
-        else:
-            interp_W_radiance = self.models['interpolate'](batch['radiance'])
-            interp_W = {
-                'radiance': interp_W_radiance,
-            }
+        interp_W_diffuse = self.models['interpolate_diffuse'](batch['diffuse'])
+        interp_W_specular = self.models['interpolate_specular'](batch['specular'])
+        interp_W = {
+            'diffuse': interp_W_diffuse,
+            'specular': interp_W_specular
+        }
         return interp_W
 
     def _backward(self, batch, out, p_buffers):
@@ -1451,8 +1395,6 @@ class EnsembleKPCNInterface(BaseInterface):
             L_specular_I = self.loss_funcs['l_specular'](specular_I, tgt_specular)
             loss_dict['l_diffuse_I'] = L_diffuse_I.detach()
             loss_dict['l_specular_I'] = L_specular_I.detach()
-            # L_diffuse = L_diffuse_I
-            # L_specular = L_specular_I
  
             loss_dict['l_diffuse_G'] = L_diffuse_G.detach()
             loss_dict['l_diffuse_P'] = L_diffuse_P.detach()
@@ -1460,21 +1402,8 @@ class EnsembleKPCNInterface(BaseInterface):
             loss_dict['l_specular_G'] = L_specular_G.detach()
             loss_dict['l_specular_P'] = L_specular_P.detach()
             
-            
-            # TODO Write code of schedule learning & etc...
-            if self.fix: # if denoisers are fixed or finetuned
-                L_diffuse = L_diffuse_I
-                L_specular = L_specular_I
-            else: # weight 0 if not using / weight can be scheduled
-                # L_diffuse = L_diffuse_I + (L_diffuse_G + L_diffuse_P) * self.weight
-                # L_specular = L_specular_I + (L_specular_G + L_specular_P) * self.weight
-                L_diffuse = L_diffuse_I
-                L_specular = L_specular_I
-            # L_diffuse = L_diffuse_G + L_diffuse_P + L_diffuse_I
-            # L_specular = L_specular_G + L_specular_P + L_specular_I
-            # if self.weight > 0:
-            #     L_diffuse = L_diffuse_I + (L_diffuse_G + L_diffuse_P) * self.weight
-            #     L_specular = L_specular_I + (L_specular_G + L_specular_P) * self.weight
+            L_diffuse = L_diffuse_I
+            L_specular = L_specular_I
 
             if self.manif_learn:
                 p_buffer_diffuse = crop_like(p_buffers['diffuse'], diffuse_P)
@@ -1549,9 +1478,6 @@ class EnsembleKPCNInterface(BaseInterface):
         for model_name in self.models:
             self.models[model_name].eval()
         self.m_losses['m_val'] = torch.tensor(0.0)
-        # if self.error:
-        #     self.m_losses['m_val_err_diff'] = torch.tensor(0.0)
-        #     self.m_losses['m_val_err_spec'] = torch.tensor(0.0)
 
     def validate_batch(self, batch, mode=None):
         p_buffers = None
@@ -1560,15 +1486,6 @@ class EnsembleKPCNInterface(BaseInterface):
             self.models['backbone_diffuse'].zero_grad()
             self.models['backbone_specular'].zero_grad()
             p_buffers = self._manifold_forward(batch)
-
-            # if self.iters % 1000 == 1:
-            #     pimg = np.mean(np.transpose(p_buffers['diffuse'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
-            #     pimg = np.clip(pimg, 0.0, 1.0)
-            #     plt.imsave('../LLPM_results/pbuf_%s_diffuse.png'%(self.args.model_name), pimg)
-
-            #     pimg = np.mean(np.transpose(p_buffers['specular'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
-            #     pimg = np.clip(pimg, 0.0, 1.0)
-            #     plt.imsave('../LLPM_results/pbuf_%s_specular.png'%(self.args.model_name), pimg)
             
             """ Feature disentanglement """
             _, _, c, _, _ = p_buffers['diffuse'].shape
@@ -1635,12 +1552,12 @@ class EnsembleKPCNInterface(BaseInterface):
                 batch_interp = {
                     'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
                                         out['diffuse_P'].clone().detach(),
-                                        # crop_like(batch_G['kpcn_diffuse_in'][:, 10:], out['diffuse_G']),
+                                        crop_like(batch_G['kpcn_diffuse_in'][:, 10:], out['diffuse_G']),
                                         crop_like(batch_P['kpcn_diffuse_in'][:, 10:], out['diffuse_P']),
                                         ], dim=1),
                     'specular': torch.cat([out['specular_G'].clone().detach(), 
                                         out['specular_P'].clone().detach(),
-                                        # crop_like(batch_G['kpcn_specular_in'][:, 10:], out['specular_G']),
+                                        crop_like(batch_G['kpcn_specular_in'][:, 10:], out['specular_G']),
                                         crop_like(batch_P['kpcn_specular_in'][:, 10:], out['specular_P']),
                                         ], dim=1)
                 }
@@ -1745,3 +1662,6 @@ class EnsembleKPCNInterface(BaseInterface):
                     continue
                 losses[key] = self.m_losses[key].item() / (norm * 2)
             return losses
+
+    def scheduler():
+        pass

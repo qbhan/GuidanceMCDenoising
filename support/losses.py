@@ -7,12 +7,12 @@ import math
 __all__ = ["GlobalRelativeSimilarityLoss", "FeatureMSE", "RelativeMSE", "SMAPE", "TonemappedMSE", "TonemappedRelativeMSE"]
 
 
-class GANLoss(torch.nn.Module):
+class WGANLoss(torch.nn.Module):
     '''
     https://github.com/mcdenoising/AdvMCDenoise/blob/master/codes/models/arch/loss.py
-    '''
+    ''' 
     def __init__(self, real_label_val=1.0, fake_label_val=0.0):
-        super(GANLoss, self).__init__()
+        super(WGANLoss, self).__init__()
         self.real_label_val = real_label_val
         self.fake_label_val = fake_label_val
 

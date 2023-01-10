@@ -13,12 +13,10 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 import train_kpcn
-import train_sbmc
 import train_lbmc
-# import train_adv
-# import train_kpcn_2
-import train_kpcn_3
+import train_adv
 import train_ensemble
+import train_ensemble_lbmc
 from support.utils import crop_like
 from support.img_utils import WriteImg
 from support.datasets import FullImageDataset
@@ -39,7 +37,7 @@ def tonemap(c, ref=None, kInvGamma=1.0/2.2):
 
 
 def load_input(filename, spp, args):    
-    if 'KPCN' in args.model_name:
+    if 'KPCN' in args.model_name or 'ADV' in args.model_name:
         dataset = FullImageDataset(filename, spp, 'kpcn',
                                    args.use_g_buf, args.use_sbmc_buf, 
                                    args.use_llpm_buf, args.pnet_out_size[0], 
@@ -60,79 +58,25 @@ def inference(interface, dataloader, spp, args):
     out_rad_dict, out_kernel_dict, out_score_dict = None, None, None
     input_dict = {'diffuse_in': torch.zeros((3, H, W)).cuda(), 'specular_in': torch.zeros((3, H, W)).cuda(),}
     if args.vis_branch:
-        if not args.error:
-            out_rad_dict = {
+        out_rad_dict = {
                 'radiance': torch.zeros((3, H, W)).cuda(),
                 'diffuse': torch.zeros((3, H, W)).cuda(), 'specular': torch.zeros((3, H, W)).cuda(),
                 'g_radiance': torch.zeros((3, H, W)).cuda(), 'p_radiance': torch.zeros((3, H, W)).cuda(),
                 'g_diffuse': torch.zeros((3, H, W)).cuda(), 'p_diffuse': torch.zeros((3, H, W)).cuda(),
                 'g_specular': torch.zeros((3, H, W)).cuda(), 'p_specular': torch.zeros((3, H, W)).cuda(),
             }
-        else:
-            # out_rad_dict = {
-            #     'radiance': torch.zeros((3, H, W)).cuda(),
-            #     'diffuse': torch.zeros((3, H, W)).cuda(),
-            #     'specular': torch.zeros((3, H, W)).cuda(),
-            # }
-            out_rad_dict = {
-                'radiance': torch.zeros((3, H, W)).cuda(),
-                'diffuse': torch.zeros((3, H, W)).cuda(), 'specular': torch.zeros((3, H, W)).cuda(),
-                'g_radiance': torch.zeros((3, H, W)).cuda(), 'p_radiance': torch.zeros((3, H, W)).cuda(),
-                'g_diffuse': torch.zeros((3, H, W)).cuda(), 'p_diffuse': torch.zeros((3, H, W)).cuda(),
-                'g_specular': torch.zeros((3, H, W)).cuda(), 'p_specular': torch.zeros((3, H, W)).cuda(),
-            }
-    if args.kernel_visualize:
-        out_kernel_dict = {
-            'diffuse': torch.zeros((21*21, H, W)).cuda(),
-            'specular': torch.zeros((21*21, H, W)).cuda()
-        }
     if args.vis_score:
-        if not args.error:
-            # out_score_dict = {
-            #     's_diffuse': torch.zeros((1, H, W)).cuda(), 's_specular': torch.zeros((1, H, W)).cuda(),
-            #     's_g_diffuse': torch.zeros((1, H, W)).cuda(), 's_p_diffuse': torch.zeros((1, H, W)).cuda(),
-            #     's_g_specular': torch.zeros((1, H, W)).cuda(), 's_p_specular': torch.zeros((1, H, W)).cuda(),
-            #     'weight_diffuse': torch.zeros((1, H, W)).cuda(), 'weight_specular': torch.zeros((1, H, W)).cuda(),
-            # }
-            # score_dict = {
-            # 's_diffuse_G': err_diffuse_G, 's_specular_G': err_specular_G,
-            # 's_diffuse_P': err_diffuse_P, 's_specular_P': err_specular_P,
-            # 's_gt_diffuse_G': gt_err_diff_G, 's_gt_specular_G': gt_err_spec_G,
-            # 's_gt_specular_G': gt_err_diff_P, 's_gt_specular_P': gt_err_spec_P
-            # }
-            out_score_dict = {
-                's_diffuse_G': torch.zeros((1, H, W)).cuda(), 's_specular_G': torch.zeros((1, H, W)).cuda(),
-                's_diffuse_P': torch.zeros((1, H, W)).cuda(), 's_specular_P': torch.zeros((1, H, W)).cuda(),
-                's_gt_diffuse_G': torch.zeros((1, H, W)).cuda(), 's_gt_specular_G': torch.zeros((1, H, W)).cuda(),
-                's_gt_diffuse_P': torch.zeros((1, H, W)).cuda(), 's_gt_specular_P': torch.zeros((1, H, W)).cuda(),
-                'weight_diffuse_G': torch.zeros((1, H, W)).cuda(), 'weight_specular_G': torch.zeros((1, H, W)).cuda(),
-                'weight_diffuse_P': torch.zeros((1, H, W)).cuda(), 'weight_specular_P': torch.zeros((1, H, W)).cuda(),
-            }
-        else:
-            # out_score_dict = {
-            #     's_diffuse': torch.zeros((1, H, W)).cuda(), 's_specular': torch.zeros((1, H, W)).cuda(),
-            #     's_gt_diffuse': torch.zeros((1, H, W)).cuda(), 's_gt_specular': torch.zeros((1, H, W)).cuda(),
-            #     's_SURE_diffuse': torch.zeros((1, H, W)).cuda(), 's_SURE_specular': torch.zeros((1, H, W)).cuda()
-            # }
-            out_score_dict = {
-                's_diffuse_G': torch.zeros((1, H, W)).cuda(), 's_specular_G': torch.zeros((1, H, W)).cuda(),
-                's_diffuse_P': torch.zeros((1, H, W)).cuda(), 's_specular_P': torch.zeros((1, H, W)).cuda(),
-                's_gt_diffuse_G': torch.zeros((1, H, W)).cuda(), 's_gt_specular_G': torch.zeros((1, H, W)).cuda(),
-                's_gt_diffuse_P': torch.zeros((1, H, W)).cuda(), 's_gt_specular_P': torch.zeros((1, H, W)).cuda(),
-                'weight_diffuse_G': torch.zeros((1, H, W)).cuda(), 'weight_specular_G': torch.zeros((1, H, W)).cuda(),
-                'weight_diffuse_P': torch.zeros((1, H, W)).cuda(), 'weight_specular_P': torch.zeros((1, H, W)).cuda(),
-            }
-    # if args.kernel_visualize and (args.use_skip or args.use_second_strategy or args.use_adv):
-    #     out_rad_dict['g_radiance'] = torch.zeros((3, H, W)).cuda() 
-    #     out_rad_dict['g_diffuse'] = torch.zeros((3, H, W)).cuda()
-    #     out_rad_dict['g_specular'] = torch.zeros((3, H, W)).cuda()
-    #     out_kernel_dict['g_diffuse'] = torch.zeros((21*21, H, W)).cuda()
-    #     out_kernel_dict['g_specular'] = torch.zeros((21*21, H, W)).cuda()
+        out_score_dict = {
+            'weight_diffuse_G': torch.zeros((1, H, W)).cuda(), 'weight_specular_G': torch.zeros((1, H, W)).cuda(),
+            'weight_diffuse_P': torch.zeros((1, H, W)).cuda(), 'weight_specular_P': torch.zeros((1, H, W)).cuda(),
+        }
+
     if args.kernel_visualize or args.vis_branch or args.vis_score: 
         mode='train'
     else: 
         mode='test'
     print('inference', mode)
+
     # GPU_Warm_UP
     if args.use_llpm_buf: c_in = 35
     else: c_in = 34
@@ -150,8 +94,7 @@ def inference(interface, dataloader, spp, args):
     for k in dummy_batch:
         if not dummy_batch[k].__class__ == torch.Tensor:
             continue
-        # print(k)
-        # batch[k] = batch[k].cuda(args.device_id)
+
         dummy_batch[k] = dummy_batch[k].cuda()
     for _ in range(10):
         _ = interface.validate_batch(dummy_batch, mode=mode)
@@ -164,23 +107,24 @@ def inference(interface, dataloader, spp, args):
             for k in batch:
                 if not batch[k].__class__ == torch.Tensor:
                     continue
-                # print(k)
-                # batch[k] = batch[k].cuda(args.device_id)
+
                 batch[k] = batch[k].cuda()
             starter.record()
+            if 'ensemble' not in args.model_name:
+                out, p_buffers, rad_dict, kernel_dict, score_dict = interface.validate_batch(batch, mode=mode)
+            else:
+                out, p_buffers, rad_dict, kernel_dict, score_dict, time = interface.validate_batch(batch, mode=mode)
+            ender.record()
+            torch.cuda.synchronize()
+            curr_time = starter.elapsed_time(ender)
+            times.append(curr_time)
 
-            out, p_buffers, rad_dict, kernel_dict, score_dict = interface.validate_batch(batch, mode=mode)
             if not rad_dict: rad_dict = dict()
             if not score_dict: score_dict = dict()
             if not kernel_dict: kernel_dict = dict()
             diffuse_in = batch['kpcn_diffuse_in'][:,:3]
             specular_in = batch['kpcn_specular_in'][:,:3]
-            ender.record()
-            torch.cuda.synchronize()
-            curr_time = starter.elapsed_time(ender)
-            times.append(curr_time)
-            # for k in rad_dict:
-            #     print(k)
+
             pad_h = PATCH_SIZE - out.shape[2]
             pad_w = PATCH_SIZE - out.shape[3]
             if pad_h != 0 and pad_w != 0:
@@ -197,17 +141,6 @@ def inference(interface, dataloader, spp, args):
                     for k in score_dict:
                         # print(score_dict[k].shape)
                         score_dict[k] = nn.functional.pad(score_dict[k], (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
-            # if args.use_llpm_buf and (out_path is None):
-            #     if type(p_buffers) == dict:
-            #         out_path = {}
-            #         for key in p_buffers:
-            #             b, s, c, h, w = p_buffers[key].shape
-            #             out_path[key] = torch.zeros((s, c, H, W)).cuda()
-            #     elif type(p_buffers) == torch.Tensor:
-            #         b, s, c, h, w = p_buffers.shape
-            #         out_path = torch.zeros((s, c, H, W)).cuda()
-                # else:
-                #     print('P buffer type not defined.')
 
             for b in range(out.shape[0]):
                 out_rad[:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = out[b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
@@ -224,23 +157,7 @@ def inference(interface, dataloader, spp, args):
                     for k in score_dict:
                         # print(k)
                         out_score_dict[k][:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = score_dict[k][b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
-                # if args.use_llpm_buf:
-                #     if type(p_buffers) == dict:
-                #         for key in p_buffers:
-                #             out_path[key][:,:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = p_buffers[key][b,:,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
-                    # elif type(p_buffers) == torch.Tensor:
-                    #     out_path[:,:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = p_buffers[b,:,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
-            # ender.record()
-            # torch.cuda.synchronize()
-            # curr_time = starter.elapsed_time(ender)
-            # times.append(curr_time)
-    # discard log transform of specular branch
-    # for k in input_dict:
-    #     if 'specular' in k:
-    #         input_dict[k] = torch.log(input_dict[k] - 1.0)
-    # for k in out_dict:
-    #     if 'specular' in k:
-    #         input_dict[k] = torch.log(input_dict[k] - 1.0)
+
     denoise_time = sum(times)
     out_rad = out_rad.detach().cpu().numpy().transpose([1, 2, 0])
     for k in input_dict:
@@ -258,28 +175,20 @@ def inference(interface, dataloader, spp, args):
     if args.vis_score:
         for k in out_score_dict:
             out_score_dict[k] = out_score_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
-        # if args.use_llpm_buf:
-        #     if type(out_path) == dict:
-        #         for key in out_path:
-        #             out_path[key] = out_path[key].detach().cpu().numpy().transpose([2, 3, 0, 1])
-        #     elif type(out_path) == torch.Tensor:
-        #         out_path = out_path.detach().cpu().numpy().transpose([2, 3, 0, 1])
 
     return out_rad, out_path, out_rad_dict, out_kernel_dict, out_score_dict, input_dict, denoise_time
 
 
 def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_figures=False, rhf=False, quantize=False, pixels=[(500,500)]):
     assert os.path.isdir(input_dir), input_dir
-    assert 'KPCN' in args.model_name or 'BMC' in args.model_name, args.model_name
+    assert 'KPCN' in args.model_name or 'BMC' in args.model_name or 'ADV' in args.model_name, args.model_name 
 
     if scenes is None:
         scenes = []
         for fn in os.listdir(input_dir.replace(os.sep + 'input', os.sep + 'gt')):
             if fn.endswith(".npy"):
                 scenes.append(fn)
-    # num_metrics = 5 * 4 # (RelL2, RelL1, DSSIM, L1, MSE) * (linear, tmap w/o gamma, tmap gamma=2.2, tmap gamma=adaptive)
-    # results = [[0 for i in range(len(scenes))] for j in range(num_metrics * len(spps))]
-    # results_input = [[0 for i in range(len(scenes))] for j in range(num_metrics * len(spps))]
+
     num_metrics = 1 + 6 * 4 + 1 # spp + (format, RelL2, RelL1, DSSIM, L1, MSE) * (linear, tmap w/o gamma, tmap gamma=2.2, tmap gamma=adaptive) + time
     results = [[0 for i in range(len(scenes)+1)] for j in range(num_metrics * (len(spps)))]
     # print('size1', len(results), len(results[0]))
@@ -292,8 +201,6 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
         p_model = os.path.join(args.save, args.model_name)
     else:
         p_model = os.path.join(args.save, args.model_name + '.pth')
-    # print('load model')
-    # ck = torch.load(p_model)
 
     print(scenes)
     for scene in scenes:
@@ -343,16 +250,15 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
                     interfaces, _ = train_sbmc.init_model(datasets, args)
                 elif 'LBMC' in args.model_name:
                     interfaces, _ = train_lbmc.init_model(datasets, args)
-                # elif 'single' in args.model_name or 'adv' in args.model_name:
-                #     interfaces, _ = train_adv.init_model(datasets, args)
-                elif 'joint' in args.model_name:
-                    interfaces, _ = train_kpcn_3.init_model(datasets, args)
                 elif 'ensemble' in args.model_name or 'ensemblwe' in args.model_name:
-                    interfaces, _ = train_ensemble.init_model(datasets, args)
-                # elif 'err' in args.model_name:
-                #     interfaces, _ = train_kpcn_2.init_model(datasets, args)
+                    if 'KPCN' in args.model_name:
+                        interfaces, _ = train_ensemble.init_model(datasets, args)
+                    elif 'lbmc' in args.model_name:
+                        interfaces, _ = train_ensemble_lbmc.init_model(datasets, args)
                 elif 'KPCN' in args.model_name:
                     interfaces, _ = train_kpcn.init_model(datasets, args)
+                elif 'ADV' in args.model_name:
+                    interfaces, _ = train_adv.init_model(datasets, args)
             '''
             if tensorrt:
                 engines, contexts = export_and_load_onnx_model(interfaces[0], p_model, dataloader)
@@ -368,38 +274,6 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
 
             tgt_diff = dataset.full_tgt_diff
             tgt_spec = dataset.full_tgt_spec
-            # if out_path is not None:
-            #     if rhf:
-            #         print('Saving P-buffer as numpy file for RHF-like visualization...')
-            #         if 'BMC' in args.model_name:
-            #             print('Shape: ', out_path.shape)
-            #             np.save(os.path.join(output_dir, 'p_buffer_%s_%s.npy'%(scene, args.model_name)), out_path)
-            #         elif 'KPCN' in args.model_name:
-            #             print('Shape: ', out_path['diffuse'].shape)
-            #             np.save(os.path.join(output_dir, 'p_buffer_%s_%s.npy'%(scene, args.model_name)), out_path['diffuse'])
-            #         print('Saved.')
-            #         return
-                
-            #     if type(out_path) == dict:
-                
-            #         for key in out_path:
-            #             out_path[key] = np.clip(np.mean(out_path[key], 2), 0.0, 1.0)
-            #             assert len(out_path[key].shape) == 3, out_path[key].shape
-            #             if out_path[key].shape[2] >= 3:
-            #                 out_path[key] = out_path[key][...,:3]
-            #             else:
-            #                 tmp = np.mean(out_path[key], 2, keepdims=True)
-            #                 out_path[key] = np.concatenate((tmp,) * 3, axis=2)
-            #             assert out_path[key].shape[2] == 3, out_path[key].shape
-            #     elif type(out_path) == torch.Tensor:
-            #         out_path = np.clip(np.mean(out_path, 2), 0.0, 1.0)
-            #         assert len(out_path.shape) == 3, out_path.shape
-            #         if out_path.shape[2] >= 3:
-            #             out_path = out_path[...,:3]
-            #         else:
-            #             tmp = np.mean(out_path, 2, keepdims=True)
-            #             out_path = np.concatenate((tmp,) * 3, axis=2)
-            #         assert out_path.shape[2] == 3, out_path.shape
 
             # Crop
             valid_size = 72
@@ -455,18 +329,7 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
             print(RelMSE(tonemap(out_rad), tonemap(tgt)))
             print(RelMSE(tonemap(ipt), tonemap(tgt)))
 
-            # for t, tmap in enumerate(tmaps):
-            #     for k, metric in enumerate(metrics):
-            #         results[(len(metrics) * t + k) * len(spps) + j][i] = metric(tmap(out_rad), tmap(tgt))
-            #         results_input[(len(metrics) * t + k) * len(spps) + j][i] = metric(tmap(ipt), tmap(tgt))
             final_index = num_metrics * (j + 1) - 1
-            # for t, tmap in enumerate(tmaps):
-            #     formatting = [tmaps_str[t]] + scenes
-            #     results[6*t] = formatting
-            #     for k, metric in enumerate(metrics):
-            #         results[(6 * t + k + 1) * len(spps)][0] = metrics_str[k]
-            #         results[(6 * t + k + 1) * len(spps) + j][i+1] = metric(tmap(out_rad), tmap(tgt))
-            #         results_input[(6 * t + k + 1) * len(spps) + j][i+1] = metric(tmap(ipt), tmap(tgt))
             for t, tmap in enumerate(tmaps):
                 formatting = [tmaps_str[t]] + scenes
                 results[num_metrics * j + 6*t + 1] = formatting
@@ -492,23 +355,14 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
                 t_err = np.mean(np.clip(err**0.45, 0.0, 1.0), 2)
 
                 plt.imsave(os.path.join(output_dir, scene, 'target.png'), t_tgt)
-                #WriteImg(os.path.join(output_dir, scene, 'target.pfm'), tgt) # HDR image
+                # WriteImg(os.path.join(output_dir, scene, 'target.pfm'), tgt) # HDR image
                 plt.imsave(os.path.join(output_dir, scene, 'input_{}.png'.format(spp)), t_ipt)
-                #WriteImg(os.path.join(output_dir, scene, 'input_{}.pfm'.format(spp)), ipt)
+                # WriteImg(os.path.join(output_dir, scene, 'input_{}.pfm'.format(spp)), ipt)
                 plt.imsave(os.path.join(output_dir, scene, 'output_{}_{}.png'.format(spp, args.model_name)), t_out)
-                #WriteImg(os.path.join(output_dir, scene, 'output_{}_{}.pfm'.format(spp, args.model_name)), out_rad)
+                # WriteImg(os.path.join(output_dir, scene, 'output_{}_{}.pfm'.format(spp, args.model_name)), out_rad)
                 plt.imsave(os.path.join(output_dir, scene, 'errmap_rmse_{}_{}.png'.format(spp, args.model_name)), t_err, cmap=plt.get_cmap('magma'))
-                #WriteImg(os.path.join(output_dir, scene, 'errmap_{}_{}.pfm'.format(spp, args.model_name)), err.mean(2))
-                if args.kernel_visualize:
-                    print(out_score_dict['fake_diffuse'].shape)
-                    plt.imsave(os.path.join(output_dir, scene, 'score_fake_diffuse_{}_{}.png'.format(spp, args.model_name)), out_score_dict['fake_diffuse'][...,0], cmap='gray')
-                    plt.imsave(os.path.join(output_dir, scene, 'score_fake_specular_{}_{}.png'.format(spp, args.model_name)), out_score_dict['fake_specular'][...,0], cmap='gray')
-                    plt.imsave(os.path.join(output_dir, scene, 'score_real_diffuse_{}_{}.png'.format(spp, args.model_name)), out_score_dict['real_diffuse'][...,0], cmap='gray')
-                    plt.imsave(os.path.join(output_dir, scene, 'score_real_specular_{}_{}.png'.format(spp, args.model_name)), out_score_dict['real_specular'][...,0], cmap='gray')
-                    # for p in pixels:
-                    #     plt.imsave(os.path.join(output_dir, scene, 'crop_target_{}_{}_{}_{}.png'.format(spp, args.model_name, p[0], p[1])), t_tgt[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
-                    #     plt.imsave(os.path.join(output_dir, scene, 'crop_input_{}_{}_{}_{}.png'.format(spp, args.model_name, p[0], p[1])), t_ipt[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
-                    #     plt.imsave(os.path.join(output_dir, scene, 'crop_output_{}_{}_{}_{}.png'.format(spp, args.model_name, p[0], p[1])), t_out[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
+                # WriteImg(os.path.join(output_dir, scene, 'errmap_{}_{}.pfm'.format(spp, args.model_name)), err.mean(2))
+                plt.imsave(os.path.join(output_dir, scene, 'errmap_{}_{}.png'.format(spp, args.model_name)), err.mean(2), cmap='jet', vmin=0, vmax=0.2)
 
 
             if args.vis_branch:
@@ -522,35 +376,23 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
                     plt.imsave(os.path.join(output_dir, scene, str(spp), args.model_name, '{}.png'.format(k)), kk)
                 for k in out_rad_dict:
                     kk = tmaps[-1](out_rad_dict[k])
-                    plt.imsave(os.path.join(output_dir, scene, str(spp), args.model_name, '{}.png'.format(k)), kk)
-                    # if not args.error:
-                    #     if 'diffuse' in k:
-                    #         # err = np.clip(np.square(tonemap(out_rad_dict[k])-tonemap(tgt_diff)).mean(2), 0, 1)
-                    #         err = np.square(out_rad_dict[k]-tgt_diff).mean(2)
-                    #         plt.imsave(os.path.join(output_dir, scene, str(spp), args.model_name, '{}.png'.format('s_gt_g_diffuse')), err, cmap='jet', vmin=0, vmax=0.2)
-                    #     elif 'specular' in k:
-                    #         # err = np.clip(np.square(tonemap(out_rad_dict[k])-tonemap(tgt_spec)).mean(2), 0, 1)
-                    #         err = np.square(out_rad_dict[k]-tgt_diff).mean(2)
-                    #         plt.imsave(os.path.join(output_dir, scene, str(spp), args.model_name, '{}.png'.format('s_gt_g_specular')), err, cmap='jet', vmin=0, vmax=0.2)
-                    #     elif 'p_diffuse' in k:
-                    #         # err = np.clip(np.square(tonemap(out_rad_dict[k])-tonemap(tgt_diff)).mean(2), 0, 1)
-                    #         err = np.square(out_rad_dict[k]-tgt_diff).mean(2)
-                    #         plt.imsave(os.path.join(output_dir, scene, str(spp), args.model_name, '{}.png'.format('s_gt_p_diffuse')), err, cmap='jet', vmin=0, vmax=0.2)
-                    #     elif 'p_specular' in k:
-                    #         # err = np.clip(np.square(tonemap(out_rad_dict[k])-tonemap(tgt_spec)).mean(2), 0, 1)
-                    #         err = np.square(out_rad_dict[k]-tgt_diff).mean(2)
-                    #         plt.imsave(os.path.join(output_dir, scene, str(spp), args.model_name, '{}.png'.format('s_gt_p_specular')), err, cmap='jet', vmin=0, vmax=0.2)
-                # diffuse_in, specular_in = input_dict['diffuse'], input_dict['specular']
-                # diffuse_out, specular_out = out_rad_dict['diffuse'], out_rad_dict['specular']
-                # diffuse_tgt, specular_tgt = tgt_diff, tgt_spec
-                
-
-                    
-                # out_g_diff = out_rad_dict['g_diffuse']
-                # out_g_spec = out_rad_dict['g_specular']
-                # out_p_diff = out_rad_dict['p_diffuse']
-                # out_p_spec = out_rad_dict['p_specular']
-
+                    err = None
+                    if 'diff' in k: 
+                        err = RelMSE(out_rad_dict[k], tgt_diff, reduce=False)
+                        err = err.reshape(tgt_diff.shape[0], tgt_diff.shape[1], 3)
+                    elif 'spec' in k: 
+                        err = RelMSE(out_rad_dict[k], tgt_spec, reduce=False)
+                        err = err.reshape(tgt_spec.shape[0], tgt_spec.shape[1], 3)
+                    if type(err) is np.ndarray:
+                        # print(err.shape)
+                        if kk.mean() > 0:
+                            plt.imsave(os.path.join(output_dir, scene, str(spp), args.model_name, 'errmap_10_{}.png'.format(k)), err.mean(2), cmap=plt.get_cmap('magma'), vmin=0, vmax=1.0)
+                            plt.imsave(os.path.join(output_dir, scene, str(spp), args.model_name, 'errmap_4_{}.png'.format(k)), err.mean(2), cmap=plt.get_cmap('magma'), vmin=0, vmax=0.4)
+                            plt.imsave(os.path.join(output_dir, scene, str(spp), args.model_name, 'errmap_2_{}.png'.format(k)), err.mean(2), cmap=plt.get_cmap('magma'), vmin=0, vmax=0.2)
+                    # t_err = np.mean(np.clip(err**0.45, 0.0, 1.0), 2)
+                    if kk.mean() > 0:
+                        plt.imsave(os.path.join(output_dir, scene, str(spp), args.model_name, '{}.png'.format(k)), kk)
+        
             if args.kernel_visualize:
                     for p in pixels:
                         plt.imsave(os.path.join(output_dir, scene, str(spp), 'crop_{}_{}_{}_{}_{}.png'.format(spp, args.model_name,k,p[0],p[1])), kk[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
@@ -560,9 +402,8 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
                         plt.imsave(os.path.join(output_dir, scene, str(spp), 'kernel_{}_{}_{}_{}_{}.png'.format(spp, args.model_name,k,p[0],p[1])), kk, cmap='gray')
             if args.vis_score:
                 for k in out_score_dict:
-                    # if 's_gt_diffuse_P' in k: print(out_score_dict[k])
                     if 'weight' in k: 
-                        cmap = 'Greys'
+                        cmap = 'gray'
                         vmin = 0
                         vmax = 1
                     else: 
@@ -571,18 +412,13 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
                         # if 'diffuse' in k: vmax = 0.5
                         # elif 'specular' in k: vmax = 0.2
                         vmax = 1.0
-                        print('max', k, np.max(out_score_dict[k]))
+                        # print('max', k, np.max(out_score_dict[k]))
                     plt.imsave(os.path.join(output_dir, scene, str(spp), args.model_name, '{}.png'.format(k)), out_score_dict[k][..., 0], cmap=plt.get_cmap(cmap), vmin=vmin, vmax=vmax)
             
-    # x, y = len(results), len(results[0])
-    # print('size', x, y)
-    # for i in range(x):
-    #     for j in range(y):
-    #         print(results[i][j])
     print('saving results :', os.path.join(output_dir, 'results_{}_{}.csv'.format(args.model_name, spps[-1])))
     np.savetxt(os.path.join(output_dir, 'results_{}_{}.csv'.format(args.model_name, spps[-1])), results, fmt='%s', delimiter=',')
     print('done')
-    # np.savetxt(os.path.join(output_dir, 'results_input_%d.csv'%(spps[-1])), results_input, delimiter=',')
+    np.savetxt(os.path.join(output_dir, 'results_input_%d.csv'%(spps[-1])), results_input, delimiter=',')
 
 
 if __name__ == "__main__":
@@ -642,6 +478,7 @@ if __name__ == "__main__":
         model_type = 'unet'
         error = False
         no_gbuf = False
+        
 
         # ensemble
         lr_enet = [1e-4]
@@ -651,6 +488,9 @@ if __name__ == "__main__":
         fix = False
         error = True
         interpolate = True
+        feature = True
+        schedule = [0.0]
+        ensemble_branches = True
 
 
         # feature analysis
@@ -658,15 +498,16 @@ if __name__ == "__main__":
         load_pbuf = True
 
         # save
-        kernel_visualize = False
         vis_branch = False
         vis_score = False
     
     args = Args()
 
     input_dir = '/mnt/ssd1/kbhan/KPCN/test/input/'
+    # input_dir = '/mnt/ssd2/kbhan/new_volume/KPCN/test/input/'
     # full scene
-    scenes = ['bathroom', 'bathroom_v2', 'bathroom_v3', 'bathroom-3', 'bathroom-3_v2', 'bathroom-3_v3', 'car', 'car_v2', 'car_v3', 'car2', 'car2_v3', 'chair-room', 'chair-room_v2', 'chair', 'gharbi', 'hookah', 'hookah_v2', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'kitchen-2_v3', 'library-office', 'sitting-room-2', 'tableware']
+    # scenes = ['bathroom', 'bathroom_v2', 'bathroom_v3', 'bathroom-3', 'bathroom-3_v2', 'bathroom-3_v3', 'car', 'car_v2', 'car_v3', 'car2', 'car2_v3', 'chair-room', 'chair-room_v2', 'chair', 'gharbi', 'hookah', 'hookah_v2', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'kitchen-2_v3', 'library-office', 'sitting-room-2', 'tableware']
+    # scenes = ['bathroom', 'bathroom_v2', 'bathroom_v3', 'bathroom-3', 'bathroom-3_v2', 'bathroom-3_v3', 'car', 'car_v2', 'car_v3', 'car2', 'car2_v3', 'chair-room', 'chair-room_v2', 'chair', 'gharbi', 'hookah', 'hookah_v2', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'kitchen-2_v3', 'library-office', 'sitting-room-2', 'tableware']
     # scenes with 32, 64 spp
     # scenes = ['bathroom-3_v2', 'car', 'car_v2', 'car_v3', 'chair', 'chair-room', 'chair-room_v2', 'gharbi', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'library-office', 'sitting-room-2', 'tableware']
     
@@ -680,8 +521,8 @@ if __name__ == "__main__":
     # spps = [32, 64]
     # spps = [8]
     torch.cuda.set_device(args.device_id)
-    args.save = '/home/kyubeom/WCMC/weights_ens/'
-    args.output_dir = 'result_ens_8_vis'
+    args.save = '/home/kyubeom/WCMC/weights_full_3_new/'
+    args.output_dir = 'result_final'
 
     scene_full = ['bathroom', 'bathroom_v2', 'bathroom_v3', 'bathroom-3', 'bathroom-3_v2', 'bathroom-3_v3', 'car', 'car_v2', 'car_v3', 'car2', 'car2_v3', 'chair-room', 'chair-room_v2', 'chair', 'gharbi', 'hookah', 'hookah_v2', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'kitchen-2_v3', 'library-office', 'sitting-room-2', 'tableware']
     scene_64 = ['bathroom-3_v2', 'car', 'car_v2', 'car_v3', 'chair', 'chair-room', 'chair-room_v2', 'gharbi', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'library-office', 'sitting-room-2', 'tableware']
@@ -690,77 +531,407 @@ if __name__ == "__main__":
         'bathroom-2_1', 'bedroom_0', 'coffee_22', 'cornell-box-2_16', 'cornell-box_25', 'dining-room-2_20', 'dragon_48', 'glass-of-water_52', 'hyperion_15', 
         'kitchen_45', 'lamp_33', 'living-room-2_6', 'living-room-3_61', 'living-room_25', 'material-testball_28', 'spaceship_0', 'staircase-2_3', 'staircase_61',
         ]
-    # KPCN
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # print('KPCN')
-    # args.model_name = 'KPCN_full'
-    # args.pnet_out_size = [0]
-    # args.use_llpm_buf, args.manif_learn = False, False
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # args.error = True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
-    # KPCN_err
-    # scenes = scene_full
-    # spps = [4]
-    # print('KPCN_err')
-    # args.model_name = 'KPCN_err_unet_2'
-    # args.error, args.error_type, args.model_type = True, 'L1', 'unet'
-    # args.pnet_out_size = [0]
-    # args.use_llpm_buf, args.manif_learn = False, False
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+    scene_2 = ['bathroom-2', 'bathroom', 'car', 'car2', 'coffee', 'gharbi', 'kitchen', 'living-room-2', 'living-room-3', 'living-room', 'staircase-2']
 
     # scenes = scene_full
-    # spps = [8]
-    # print('KPCN_err')
-    # args.model_name = 'KPCN_err_conv3_joint_relL1_scale5_3'
-    # args.error, args.error_type, args.model_type = True, 'relL1', 'cnn'
-    # args.pnet_out_size = [0]
-    # args.use_llpm_buf, args.manif_learn = False, False
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # KPCN_manif
-    # scenes = scene_full
-    # args.save = '/home/kyubeom/WCMC/weights_full_2/'
-    # args.output_dir = 'result_nogbuf'
     # spps = [2, 4, 8, 16]
     # print('KPCN_manif')
+    # # scenes = scene_full
+    # args.save = '/home/kyubeom/WCMC/weights_full_2'
     # args.model_name = 'KPCN_manif_p12_full'
     # args.pnet_out_size = [12]
     # # args.no_gbuf = True
     # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = False, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
     # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    args.output_dir = 'result_adv'
+
+    # KPCN
+    scenes = scene_full
+    spps = [2, 4, 8, 16]
+    print('KPCN')
+    args.save = '/home/kyubeom/WCMC/weights_adv/'
+    args.model_name = 'e9_ADV_G_3'
+    args.pnet_out_size = [0]
+    args.use_llpm_buf, args.manif_learn = False, False
+    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # args.error = True
+    denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    scenes = scene_64
+    spps = [32, 64]
+
+    # KPCN
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # print('KPCN')
+    # args.save = '/home/kyubeom/WCMC/weights_half/'
+    # args.model_name = 'e4_KPCN_G_half'
+    # args.pnet_out_size = [0]
+    # args.use_llpm_buf, args.manif_learn = False, False
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # # args.error = True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # print('KPCN')
+    # args.save = '/home/kyubeom/WCMC/weights_half/'
+    # args.model_name = 'e6_KPCN_G_half'
+    # args.pnet_out_size = [0]
+    # args.use_llpm_buf, args.manif_learn = False, False
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # # args.error = True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # # # # KPCN_manif
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # print('KPCN_manif')
+    # scenes = scene_full
+    # args.save = '/home/kyubeom/WCMC/weights_half'
+    # args.model_name = 'e6_KPCN_P_half'
+    # args.pnet_out_size = [12]
+    # args.no_gbuf = True
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # # # # KPCN_manif
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # print('KPCN_manif')
+    # scenes = scene_full
+    # args.save = '/home/kyubeom/WCMC/weights_half'
+    # args.model_name = 'e8_KPCN_P_half'
+    # args.pnet_out_size = [12]
+    # args.no_gbuf = True
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # print('KPCN_manif')
+    # # scenes = scene_full
+    # args.save = '/home/kyubeom/WCMC/weights_full_2'
+    # args.model_name = 'KPCN_manif_p12_full'
+    # args.pnet_out_size = [12]
+    # args.no_gbuf = False
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
     # scenes = scene_64
     # spps = [32, 64]
     # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
 
-    # KPCN_err
     # scenes = scene_full
-    # spps = [8]
-    # print('KPCN_ensemble')
-    # args.model_name = 'KPCN_err_unet_joint_MSE_scale5_lr5e5'
-    # # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = False, False
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_half/'
+    # args.model_name = 'e8_KPCN_ensemble_feature_finetune_half'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
     # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = True, 'MSE'
-    # args.model_type = 'unet'
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # args.error, args.error_type = False, 'MSE'
+    # # args.model_type = 'unet'
+    # args.feature = True
+    # args.train_branches = True
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
     # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
     # scenes = scene_64
     # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_half/'
+    # args.model_name = 'e11_KPCN_ensemble_feature_finetune_half'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'MSE'
+    # # args.model_type = 'unet'
+    # args.feature = True
+    # args.train_branches = True
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_half/'
+    # args.model_name = 'e3_KPCN_ensemble_feature_finetune_half_2'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'MSE'
+    # # args.model_type = 'unet'
+    # args.feature = True
+    # args.train_branches = True
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_full_3/'
+    # args.model_name = 'KPCN_ensemble_finetune_full'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'MSE'
+    # # args.model_type = 'unet'
+    # args.feature = False
+    # args.train_branches = True
+    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
     # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_new/'
+    # args.model_name = 'e3_KPCN_ensemble_feature_finetune_full_5_5'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'MSE'
+    # # args.model_type = 'unet'
+    # args.feature = True
+    # args.train_branches = True
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_new/'
+    # args.model_name = 'e5_KPCN_ensemble_feature_finetune_full_5_5'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'MSE'
+    # # args.model_type = 'unet'
+    # args.feature = True
+    # args.train_branches = True
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_new/'
+    # args.model_name = 'e2_KPCN_ensemble_feature_finetune_full_5_2'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'MSE'
+    # # args.model_type = 'unet'
+    # args.feature = True
+    # args.train_branches = True
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_new/'
+    # args.model_name = 'e3_KPCN_ensemble_feature_finetune_full_5_2'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'MSE'
+    # # args.model_type = 'unet'
+    # args.feature = True
+    # args.train_branches = True
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_new/'
+    # args.model_name = 'e7_KPCN_ensemble_feature_finetune_full_5_2'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'MSE'
+    # # args.model_type = 'unet'
+    # args.feature = True
+    # args.train_branches = True
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_new/'
+    # args.model_name = 'e3_KPCN_ensemble_feature_finetune_final_full'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'MSE'
+    # # args.model_type = 'unet'
+    # args.feature = True
+    # args.train_branches = False
+    # args.ensemble_branches = False
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+
+    # # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_new/'
+    # args.model_name = 'KPCN_ensemble_feature_finetune_full'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'MSE'
+    # # args.model_type = 'unet'
+    # args.feature = True
+    # args.train_branches = True
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_full_3/'
+    # args.model_name = 'KPCN_ensemble_finetune_full'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'MSE'
+    # # args.model_type = 'unet'
+    # args.feature = False
+    # args.train_branches = True
+    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_full_3/'
+    # args.output_dir = 'result_new_full_3'
+    # args.model_name = 'KPCN_ensemble_feature_fix_full'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # # args.model_type = 'unet'
+    # args.error, args.error_type = False, 'MSE'
+    # args.feature = True
+    # args.train_branches = True
+    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_full_3/'
+    # args.model_name = 'KPCN_ensemble_fix_full'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'MSE'
+    # args.feature = False
+    # args.train_branches = True
+    # # args.model_type = 'unet'
+    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_full_3_new/'
+    # args.model_name = 'KPCN_ensemble_full'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'MSE'
+    # args.feature = False
+    # args.train_branches = True
+    # # args.model_type = 'unet'
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # # print('KPCN_ensemble')
+    # args.save = '/home/kyubeom/WCMC/weights_full_3/'
+    # args.model_name = 'KPCN_ensemble_feature_finetune_full_2'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'MSE'
+    # args.feature = True
+    # args.train_branches = True
+    # # args.model_type = 'unet'
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
 
     # KPCN_ensemble
     # scenes = scene_full
@@ -782,24 +953,24 @@ if __name__ == "__main__":
 
 
     # KPCN_ensemble
-    input_dir = '/mnt/ssd2/kbhan/KPCN/val/input/'
-    args.save = '/home/kyubeom/WCMC/weights_ens_8/'
-    args.output_dir = 'result_ens_8_val'
-    scenes = scene_val
-    spps = [8]
-    print('KPCN_ensemble_error')
-    args.model_name = 'latest_KPCN_ensemble_error_only_SMAPE_lr2e4'
-    args.pnet_out_size = [12]
-    args.use_llpm_buf, args.manif_learn = True, True
-    args.load_gbuf, args.load_pbuf = True, True
-    args.error, args.error_type = True, 'SMAPE'
-    args.interpolate = False
-    args.model_type = 'dsbn_unet'
-    args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    scenes = scene_64
-    spps = [32, 64]
-    denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # input_dir = '/mnt/ssd1/kbhan/KPCN/val/input/'
+    # args.save = '/home/kyubeom/WCMC/weights_full_2/'
+    # args.output_dir = 'result_new_full_vis'
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # print('KPCN_ensemble')
+    # args.model_name = 'KPCN_ensemble_finetune_full'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.error, args.error_type = False, 'SMAPE'
+    # args.interpolate = True
+    # args.model_type = 'dsbn_unet'
+    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
 
     # scenes = scene_full
     # spps = [2, 4, 8, 16]

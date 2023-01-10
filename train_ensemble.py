@@ -21,12 +21,11 @@ from tensorboardX import SummaryWriter
 import configs
 from support.networks import PathNet
 # our strategy
-from support.networks import ErrorEstimationNet, InterpolationNet, InterpolationNet2
+from support.networks import InterpolationNet
 from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
 from support.losses import RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
-from support.interfaces import ErrorEnsembleKPCNInterface, EnsembleKPCNInterface
-# from train_kpcn import validate_kpcn, train, train_epoch_kpcn
+from support.interfaces import EnsembleKPCNInterface
 
 # Gharbi et al. dependency
 sys.path.insert(1, configs.PATH_SBMC)
@@ -36,15 +35,8 @@ except ImportError as error:
     print('Put appropriate paths in the configs.py file.')
     raise
 
-# for multi_gpu and amp support from KISTI
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.nn import DataParallel as DP
-from torch.utils.data.distributed import DistributedSampler
-import torch.multiprocessing as mp
-import torch.distributed as dist
 # import logging
 from tensorboardX import SummaryWriter
-from train_kpcn import logging, logging_training
 
 BS_VAL = 4
 
@@ -53,6 +45,13 @@ PRE_MODEL_FN = {
                     'dncnn_P': 'weights_full_3/KPCN_manif_p12_nogbuf_full_3.pth',
                     'backbone_diffuse': 'weights_full_3/KPCN_manif_p12_nogbuf_full_3.pth',
                     'backbone_specular': 'weights_full_3/KPCN_manif_p12_nogbuf_full_3.pth',
+                }
+
+PRE_MODEL_HALF_FN = {
+                    'dncnn_G': 'weights_full_4/e6_KPCN_G_half.pth',
+                    'dncnn_P': 'weights_full_4/e6_KPCN_P_half.pth',
+                    'backbone_diffuse': 'weights_full_4/e6_KPCN_P_half.pth',
+                    'backbone_specular': 'weights_full_4/e6_KPCN_P_half.pth',
                 }
 
 def logging(writer, epoch, s, split, relL2, best_relL2):
@@ -71,13 +70,6 @@ def train_epoch_kpcn(epoch, interfaces, dataloaders, params, args):
 
     for itf in interfaces:
         itf.to_train_mode()
-
-    # if epoch < 2:
-    #     itf.weight = 1.0
-    # elif epoch < 4:
-    #     itf.weight = 0.5
-    # else:
-    #     itf.weight = 0.0
     
 
     for batch in tqdm(dataloaders['train'], leave=False, ncols=70):
@@ -237,31 +229,21 @@ def init_data(args):
              use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
         datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
              use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
-
-    if args.distributed:
-        train_sampler = DistributedSampler(datasets['train'], shuffle=False)
-        val_sampler = DistributedSampler(datasets['val'], shuffle=False)
-    else:
-        train_sampler = None
-        val_sampler = None
     
     # Initialize dataloaders
     dataloaders = {}
-    if args.distributed: num_workers = 1 # torch.cuda.device_count()
-    else: num_workers = 1
+    num_workers = 1
     dataloaders['train'] = DataLoader(
         datasets['train'], 
         batch_size=args.batch_size,
         num_workers=num_workers,
-        pin_memory=True,
-        sampler=train_sampler
+        pin_memory=True
     )
     dataloaders['val'] = DataLoader(
         datasets['val'],
         batch_size=BS_VAL,
         num_workers=num_workers,
-        pin_memory=True,
-        sampler=val_sampler
+        pin_memory=True
     )
     return datasets, dataloaders
 
@@ -270,13 +252,12 @@ def init_model(dataset, args, rank=0):
     print('rank in init_model', rank)
     interfaces = []
 
-    lr_pnets, lr_enets, lr_inets = args.lr_pnet, args.lr_enet, args.lr_inet
+    lr_pnets, lr_inets = args.lr_pnet, args.lr_inet
     pnet_out_sizes = args.pnet_out_size
     w_manifs = args.w_manif
-    w_errors = args.w_error
 
-    tmp = [lr_pnets, lr_enets, lr_inets, pnet_out_sizes, w_manifs, w_errors]
-    for lr_pnet, lr_enet, lr_inet, pnet_out_size, w_manif, w_error in list(itertools.product(*tmp)):
+    tmp = [lr_pnets, lr_inets, pnet_out_sizes, w_manifs]
+    for lr_pnet, lr_inet, pnet_out_size, w_manif in list(itertools.product(*tmp)):
         # Initialize models (NOTE: modified for each model) 
         models = {}
         if args.train_branches:
@@ -295,36 +276,19 @@ def init_model(dataset, args, rank=0):
             models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
             models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
             p_in = 10 + n_out + 1 + 1 #23
-            # else:
-            #     p_in = 46 + 1
             # two stream denoisers
-            models['dncnn_G'] = KPCN(34)
+            models['dncnn_G'] = KPCN(34, width=50)
             p_in = 23 # image 10 + pbuffer 12 + pvar 1
-            models['dncnn_P'] = KPCN(p_in)
-            # error estimation
-            n_in = (34 + p_in - 20) + 3 + 3 + 1 # all buffers + denoised image + noisy image + variance
-            if args.error:
-                n_in += 1
-                print('error :', args.error, n_in)
-                models['error_diffuse'] = ErrorEstimationNet(n_in, model_type=args.model_type)
-                models['error_specular'] = ErrorEstimationNet(n_in, model_type=args.model_type)
-            # interpolation
-            if args.error:
-                n_in = 8
+            models['dncnn_P'] = KPCN(p_in, width=50)
+
+            if args.feature:
+                n_in = 34 + p_in - 20 + 6
+                # n_in = 34 - 10 + 6 # G-buffer only
+                # n_in = p_in - 10 + 6 # P-buffer only
             else:
-                if args.feature:
-                    # n_in = 34 + p_in - 20 + 6
-                    # n_in = 34 - 10 + 6
-                    n_in = p_in - 10 + 6
-                else:
-                    n_in = 6
-            if args.ensemble_branches:
-                models['interpolate_diffuse'] = InterpolationNet(n_in, model_type=args.model_type)
-                models['interpolate_specular'] = InterpolationNet(n_in, model_type=args.model_type)
-                # models['interpolate_diffuse'] = InterpolationNet2(n_in, model_type=args.model_type)
-                # models['interpolate_specular'] = InterpolationNet2(n_in, model_type=args.model_type)
-            else:
-                models['interpolate'] = InterpolationNet(n_in, model_type=args.model_type)
+                n_in = 6
+            models['interpolate_diffuse'] = InterpolationNet(n_in, model_type=args.model_type)
+            models['interpolate_specular'] = InterpolationNet(n_in, model_type=args.model_type)
             
         else:
             assert('should use llpm')
@@ -342,9 +306,11 @@ def init_model(dataset, args, rank=0):
             if args.load:
                 # path for loading pretrained weight
                 for model_name in models:
-                    if model_name in PRE_MODEL_FN:
+                    # if model_name in PRE_MODEL_FN:
+                    if model_name in PRE_MODEL_HALF_FN:
                         print(model_name)
-                        ck_m = torch.load(PRE_MODEL_FN[model_name], map_location='cuda:{}'.format(args.device_id))
+                        # ck_m = torch.load(PRE_MODEL_FN[model_name], map_location='cuda:{}'.format(args.device_id))
+                        ck_m = torch.load(PRE_MODEL_HALF_FN[model_name], map_location='cuda:{}'.format(args.device_id))
                         if 'dncnn' in model_name: pre_model_name = 'dncnn'
                         else: pre_model_name = model_name
                         try:
@@ -414,8 +380,6 @@ def init_model(dataset, args, rank=0):
                 lr = args.lr_dncnn
             elif 'backbone' in model_name:
                 lr = lr_pnet
-            elif 'error' in model_name:
-                lr = lr_enet
             elif 'interpolat' in model_name:
                 lr  = lr_inet
             optims['optim_' + model_name] = optim.Adam(models[model_name].parameters(), lr=lr)
@@ -434,9 +398,11 @@ def init_model(dataset, args, rank=0):
                     print('No state for the optimizer for %s, use the initial optimizer and learning rate.'%(model_name))
                     continue
             else:
-                if model_name in PRE_MODEL_FN:
+                # if model_name in PRE_MODEL_FN:
+                if model_name in PRE_MODEL_HALF_FN:
                     # print(model_name)
-                    ck_m = torch.load(PRE_MODEL_FN[model_name], map_location='cuda:{}'.format(args.device_id))
+                    # ck_m = torch.load(PRE_MODEL_FN[model_name], map_location='cuda:{}'.format(args.device_id))
+                    ck_m = torch.load(PRE_MODEL_HALF_FN[model_name], map_location='cuda:{}'.format(args.device_id))
                     if 'dncnn' in model_name: pre_model_name = 'dncnn'
                     else: pre_model_name = model_name
                     if 'optims' in ck_m:
@@ -450,14 +416,9 @@ def init_model(dataset, args, rank=0):
             print('use ckpt', args.lr_ckpt)
             if not args.lr_ckpt:
                 print('Set the new learning rate %.3e for %s.'%(lr, model_name))
-                # print('only interpolate')
-                # if 'interp' in model_name:
-                #     state['param_groups'][0]['lr'] = lr
                 state['param_groups'][0]['lr'] = lr
             else:
                 print('Use the checkpoint (%s) learning rate for %s.'%(model_fn, model_name))
-                # [print(p.size()) for p in state['param_groups']]
-                # [print(p.size()) for p in optims['optim_' + model_name].state_dict()['param_groups']]
             print('load', model_name)
             optims['optim_' + model_name].load_state_dict(state)
 
@@ -465,13 +426,11 @@ def init_model(dataset, args, rank=0):
             optims['optim_' + model_name].param_groups[0]['capturable'] = True
 
         # Initialize losses (NOTE: modified for each model)
-        l_error = nn.L1Loss() # which loss works best for error estimation?
         loss_funcs = {
             'l_diffuse': nn.L1Loss(),
             'l_specular': nn.L1Loss(),
             'l_recon': nn.L1Loss(),
-            'l_test': RelativeMSE(),
-            'l_error': l_error
+            'l_test': RelativeMSE()
         }
         if args.manif_learn:
             if args.manif_loss == 'FMSE':
@@ -488,10 +447,7 @@ def init_model(dataset, args, rank=0):
             loss_funcs[loss_name].cuda()
 
         # Initialize a training interface (NOTE: modified for each model)
-        if args.error and args.interpolate:
-            itf = ErrorEnsembleKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn)
-        elif args.interpolate:
-            itf = EnsembleKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn)
+        itf = EnsembleKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn)
         if is_pretrained and not args.load:
             # TODO: needs change in automatically updating best_err
             print('Use the checkpoint best error %.3e'%(args.best_err))
@@ -503,10 +459,6 @@ def init_model(dataset, args, rank=0):
         'plots': {},
         'data_device': 1 if torch.cuda.device_count() > 1 and not args.single_gpu else args.device_id,
     }
-    # if args.visual:
-    #     params['vis'] = visdom.Visdom(server='http://localhost')
-    # else:
-    #     print('No visual.')
     
     # Make the save directory if needed
     if not os.path.isdir(args.save):
@@ -659,9 +611,9 @@ def ddp_train(rank, args):
 
 def main(args):
     # Set random seeds
-    # random.seed("Inyoung Cho, Yuchi Huo, Sungeui Yoon @ KAIST")
-    # np.random.seed(0)
-    # torch.manual_seed(0)
+    random.seed("Inyoung Cho, Yuchi Huo, Sungeui Yoon @ KAIST")
+    np.random.seed(0)
+    torch.manual_seed(0)
     torch.backends.cudnn.benchmark = True  #torch.backends.cudnn.deterministic = True
 
     # Get ready
@@ -721,9 +673,7 @@ if __name__ == "__main__":
     # new arguments
     parser.add_argument('--lr_inet', type=float, nargs='+', default=[0.0001], 
                         help='learning rate of InterpolationNet.')
-    # parser.add_argument('--strided_down', action='store_true')
-    # parser.add_argument('--weight', type=str, default='sigmoid', 
-    #                     help='activation to calculate normalized ensemble weight')
+
     parser.add_argument('--model_type', type=str, default='conv5',
                         help='model type for interpolation weight')
     parser.add_argument('--interpolate', action='store_true',
@@ -736,19 +686,6 @@ if __name__ == "__main__":
                         help='feed features to InterpolationNet')
     parser.add_argument('--weight', type=int, default=0,
                         help='weight of full training denoisers')
-    parser.add_argument('--schedule', type=float, nargs='+', default=[1.0, 0.5, 0.25, 0])
-    parser.add_argument('--ensemble_branches', action='store_true')
-
-
-    parser.add_argument('--error', action='store_true',
-                        help='train with error estimation module')
-    parser.add_argument('--lr_enet', type=float, nargs='+', default=[0.0001], 
-                        help='learning rate of ErrorNet.')
-    parser.add_argument('--w_error', nargs='+', default=[1.0], 
-                        help='ratio of the error-estimating loss to \
-                        the reconstruction loss.')
-    parser.add_argument('--error_type', type=str, default='L1',
-                        help='type of error metric for error-estmation learning')
     
     
     args = parser.parse_args()

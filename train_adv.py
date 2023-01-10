@@ -28,7 +28,7 @@ from support.losses import FeatureMSE, GlobalRelativeSimilarityLoss
 # Xu et al. dependency
 from support.networks import AdvMCD_Discriminator, AdvMCD_Generator
 from support.modules import Generator, Discriminator
-from support.losses import GANLoss, GradientPenaltyLoss
+from support.losses import WGANLoss, GradientPenaltyLoss
 
 
 from support.interfaces import AdvMCDInterface
@@ -194,7 +194,7 @@ def init_model(dataset, args, rank=0):
             'l_specular': nn.L1Loss(),
             'l_recon': nn.L1Loss(),
             'l_test': RelativeMSE(),
-            'l_gan': GANLoss(),
+            'l_gan': WGANLoss(),
             'l_gp': GradientPenaltyLoss(),
         }
 
@@ -212,9 +212,12 @@ def init_model(dataset, args, rank=0):
         for loss_name in loss_funcs:
             loss_funcs[loss_name].cuda()
 
+        for model_name in models:
+            # params['sched_' + model_name] = optim.lr_scheduler.MultiStepLR(optims['optim_' + model_name], milestones=[50000, 100000, 150000, 200000])
+            optims['sched_' + model_name] = optim.lr_scheduler.StepLR(optims['optim_' + model_name], step_size=3, gamma=0.5)
         # params['sched'] = optim.lr_scheduler.MultiStepLR(optims['optim_dncnn'], step_size=3, gamma=0.5, last_epoch=args.start_epoch-1)
-        # if is_pretrained:
-        #     params['sched_dncnn'].load_state_dict(ck['params']['sched_dncnn'].state_dict())
+            if is_pretrained:
+                optims['sched_' + model_name].load_state_dict(ck['optims']['sched_' + model_name].state_dict())
 
         itf = AdvMCDInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn)
         interfaces.append(itf)

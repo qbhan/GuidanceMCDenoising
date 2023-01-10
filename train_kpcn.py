@@ -25,6 +25,7 @@ from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
 from support.losses import RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
 from support.interfaces import KPCNInterface
+
 # Gharbi et al. dependency
 sys.path.insert(1, configs.PATH_SBMC)
 try:
@@ -32,7 +33,7 @@ try:
 except ImportError as error:
     print('Put appropriate paths in the configs.py file.')
     raise
-# from ttools.modules.image_operators import crop_like
+
 
 def logging(writer, epoch, s, split, relL2, best_relL2):
     writer.add_scalar('valid relL2 loss', relL2, epoch + s/split)
@@ -63,6 +64,10 @@ def train_epoch_kpcn(epoch, interfaces, dataloaders, params, args):
             itf.preprocess(batch)
             itf.train_batch(batch)
     
+    # update scheduler
+    for itf in interfaces:
+        itf.scheduler()
+
     summaries = []
     if not args.visual:
         for itf in interfaces:
@@ -101,99 +106,6 @@ def validate_kpcn(epoch, interfaces, dataloaders, params, split, args):
     return summaries
 
 
-def train_one_epoch_with_validation(epoch, interfaces, dataloaders, params, writer, save_fn, args, split=4):
-    assert 'train' in dataloaders, "argument `dataloaders` dictionary should contain `'train'` key."
-    assert 'val' in dataloaders, "argument `dataloaders` dictionary should contain `'train'` key."
-    assert 'data_device' in params, "argument `params` dictionary should contain `'data_device'` key."
-    print('[][] Epoch %d' % (epoch))
-
-    for itf in interfaces:
-        itf.to_train_mode()
-
-    l = len(dataloaders['train'])//split
-    cnt, s = 0, 0
-    for batch in tqdm(dataloaders['train'], leave=False, ncols=70):
-        # Transfer data from the cpu to gpu memory
-        for k in batch:
-            if not batch[k].__class__ == torch.Tensor:
-                continue
-            batch[k] = batch[k].cuda(params['data_device'])
-
-        # Main
-        for itf in interfaces:
-            itf.preprocess(batch, args.use_single)
-            itf.train_batch(batch)
-        
-        cnt += 1
-        # if cnt < l and cnt % l == 0 :
-        if cnt % l == 0 :
-            train_summaries = []
-            if not args.visual:
-                for itf in interfaces:
-                    train_summaries.append(itf.get_epoch_summary(mode='train', norm=len(dataloaders['train'])//split))
-            logging_training(writer, epoch, s, split, train_summaries)
-            for i, itf in enumerate(interfaces):
-                tmp_params = params.copy()
-                tmp_params['vis'] = None
-
-                state_dict = {
-                    'description': args.desc, #
-                    'start_epoch': epoch + 1,
-                    'model': str(itf.models['dncnn']),
-                    'params': tmp_params,
-                    'optims': itf.optims,
-                    'args': args,
-                    'best_err': itf.best_err
-                }
-
-            for model_name in itf.models:
-                state_dict['state_dict_' + model_name] = itf.models[model_name].state_dict()
-
-            if not args.not_save:
-                torch.save(state_dict, os.path.join(args.save, 'latest_' + save_fn))
-
-            val_summaries=validate_kpcn(epoch, interfaces, dataloaders, params, s, args)
-            for i, itf in enumerate(interfaces):
-                if val_summaries[i] < itf.best_err:
-                    itf.best_err = val_summaries[i]
-
-                    tmp_params = params.copy()
-                    tmp_params['vis'] = None
-
-                    state_dict = {
-                        'description': args.desc, #
-                        'start_epoch': epoch + 1,
-                        'model': str(itf.models['dncnn']),
-                        'params': tmp_params,
-                        'optims': itf.optims,
-                        'args': args,
-                        'best_err': itf.best_err
-                    }
-
-                    for model_name in itf.models:
-                        state_dict['state_dict_' + model_name] = itf.models[model_name].state_dict()
-
-                    if not args.not_save:
-                        torch.save(state_dict, os.path.join(args.save, save_fn))
-                        print('[][] Model %s saved at epoch %d split %d.'%(save_fn, epoch, s))
-
-                print('[][] Model {} RelMSE: {:.3f}e-3 \t Best RelMSE: {:.3f}e-3'.format(save_fn, val_summaries[i]*1000, itf.best_err*1000))
-                logging(writer, epoch, s, split, val_summaries[i], itf.best_err)
-            for itf in interfaces:
-                itf.to_train_mode()
-            s += 1
-    
-    train_summaries = []
-    if not args.visual:
-        for itf in interfaces:
-            train_summaries.append(itf.get_epoch_summary(mode='train', norm=len(dataloaders['train'])))
-
-    itf.epoch += 1
-    itf.cnt = 0
-    
-    return train_summaries
-
-
 def train(interfaces, dataloaders, params, args):
     print('[] Experiment: `{}`'.format(args.desc))
     print('[] # of interfaces : %d'%(len(interfaces)))
@@ -208,7 +120,6 @@ def train(interfaces, dataloaders, params, args):
             raise NotImplementedError('Multiple interfaces')
 
         start_time = time.time()
-        # train_one_epoch_with_validation(epoch, interfaces, dataloaders, params, writer, save_fn, args, split=4)
         train_summaries = train_epoch_kpcn(epoch, interfaces, dataloaders, params, args)
         logging_training(writer, epoch, 0, 1, train_summaries)
 
@@ -267,10 +178,6 @@ def train(interfaces, dataloaders, params, args):
                 print('[][] Model {} RelMSE: {:.3f}e-3 \t Best RelMSE: {:.3f}e-3'.format(save_fn, summaries[i]*1000, itf.best_err*1000))
                 logging(writer, epoch, 0, 1, summaries[i], itf.best_err)
 
-        # # Update schedulers
-        for key in params:
-            if 'sched_' in key:
-                params[key].step()
     print('[] Training complete!')
 
 
@@ -279,19 +186,11 @@ Main Utils
 """
 def init_data(args):
     # Initialize datasets
-    datasets = {}
-    # if 'full' in args.desc:
-    print('load full dataset')
+    datasets = {}    
     datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
     datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
-    # else:
-    #     print('load 8spp dataset')
-    #     datasets['train'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-    #          use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
-    #     datasets['val'] = DenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-    #          use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
     
     # Initialize dataloaders
     dataloaders = {}
@@ -332,7 +231,8 @@ def init_model(dataset, args):
                 print('input for no_gbuf', n_in)
             else:
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size
-            models['dncnn'] = KPCN(n_in, width=50)
+            # models['dncnn'] = KPCN(n_in, width=)
+            models['dncnn'] = KPCN(n_in, width=100)
             print('Initialize KPCN for path descriptors (# of input channels: %d).'%(n_in))
 
             n_in = dataset['train'].pnet_in_size
@@ -399,20 +299,6 @@ def init_model(dataset, args):
         optims = {}
         for model_name in models:
             lr = args.lr_dncnn if 'dncnn' == model_name else lr_pnet
-            # if args.use_pretrain and 'dncnn' == model_name:
-            #     lr_finetune = 1e-6
-            #     pre_params = []
-            #     all_params = set(models[model_name].parameters())
-            #     model_state_dict = models[model_name].state_dict()
-            #     for k in model_state_dict:
-            #         if 'gbuf' in k: pre_params += list(model_state_dict[k])
-            #         else: full_params += models[model_name][k]
-            #     pre_params = set(pre_params)
-            #     full_params = all_params - pre_params
-            #     optims['optim_' + model_name] = optim.Adam(pre_params, lr=lr_finetune)
-            #     optims['optim_' + model_name] = optim.Adam(full_params, lr=lr)
-            # else:
-            #     optims['optim_' + model_name] = optim.Adam(models[model_name].parameters(), lr=lr)
             optims['optim_' + model_name] = optim.Adam(models[model_name].parameters(), lr=lr)
             
             if not is_pretrained:
@@ -454,32 +340,17 @@ def init_model(dataset, args):
             print('Manifold loss: None (i.e., ablation study)')
 
         # Initialize a training interface (NOTE: modified for each model)
-        if args.kpcn_ref:
-            itf = KPCNRefInterface(models, optims, loss_funcs, args, train_branches=args.train_branches)
-        elif args.kpcn_pre:
-            itf = KPCNPreInterface(models, optims, loss_funcs, args, manif_learn=args.manif_learn, train_branches=args.train_branches)
-        else:
-            itf = KPCNInterface(models, optims, loss_funcs, args, visual=args.visual, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, w_manif=w_manif, train_branches=args.train_branches, disentanglement_option=args.disentangle, use_pretrain=args.use_pretrain)
+        itf = KPCNInterface(models, optims, loss_funcs, args, visual=args.visual, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, w_manif=w_manif, train_branches=args.train_branches, disentanglement_option=args.disentangle, use_pretrain=args.use_pretrain)
         if is_pretrained:
             print('Use the checkpoint best error %.3e'%(args.best_err))
             itf.best_err = args.best_err
         interfaces.append(itf)
     
-    # Initialize a visdom visualizer object
-    params = {
-        'plots': {},
-        'data_device': 1 if torch.cuda.device_count() > 1 and not args.single_gpu else args.device_id,
-    }
-    # if args.visual:
-    #     params['vis'] = visdom.Visdom(server='http://localhost')
-    # else:
-    #     print('No visual.')
-    
     # Make the save directory if needed
     if not os.path.isdir(args.save):
         os.mkdir(args.save)
 
-    return interfaces, params
+    return interfaces, None
 
 
 def main(args):
@@ -556,16 +427,9 @@ if __name__ == "__main__":
     parser.add_argument('--device_id', type=int, default=0,
                         help='device id')
 
-    parser.add_argument('--kpcn_ref', action='store_true',
-                        help='train KPCN-Ref model.')
-    parser.add_argument('--kpcn_pre', action='store_true',
-                        help='train KPCN-Pre model.')
     parser.add_argument('--not_save', action='store_true',
                         help='do not save checkpoint (debugging purpose).')
     parser.add_argument('--local', action='store_true')
-    parser.add_argument('--use_single', action='store_true')
-    parser.add_argument('--use_pretrain', action='store_true')
-    parser.add_argument('--no_p_model', action='store_true')
     parser.add_argument('--no_gbuf', action='store_true')
     
 

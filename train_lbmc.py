@@ -42,13 +42,9 @@ except ImportError as error:
 def init_data(args):
     # Initialize datasets
     datasets = {}
-    # datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'lbmc', 'train', args.batch_size, 'random',
-    #     use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
-    # datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'lbmc', 'val', BS_VAL, 'grid',
-    #     use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
-    datasets['train'] = DenoiseDataset(args.data_dir, 8, 'lbmc', 'train', args.batch_size, 'random',
+    datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'lbmc', 'train', args.batch_size, 'random',
         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
-    datasets['val'] = DenoiseDataset(args.data_dir, 8, 'lbmc', 'val', BS_VAL, 'random',
+    datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'lbmc', 'val', BS_VAL, 'grid',
         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
     
     # Initialize dataloaders

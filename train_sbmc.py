@@ -42,10 +42,6 @@ def init_data(args):
         use_g_buf=True, use_sbmc_buf=args.use_sbmc_buf, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
     datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'sbmc', 'val', BS_VAL, 'grid',
         use_g_buf=True, use_sbmc_buf=args.use_sbmc_buf, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
-    # datasets['train'] = DenoiseDataset(args.data_dir, 8, 'sbmc', 'train', args.batch_size, 'random',
-    #     use_g_buf=True, use_sbmc_buf=True, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
-    # datasets['val'] = DenoiseDataset(args.data_dir, 8, 'sbmc', 'val', BS_VAL, 'random',
-    #     use_g_buf=True, use_sbmc_buf=True, use_llpm_buf=args.use_llpm_buf, pnet_out_size=0)
     
     
     # Initialize dataloaders
