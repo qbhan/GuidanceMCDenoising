@@ -191,7 +191,6 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
 
     num_metrics = 1 + 6 * 4 + 1 # spp + (format, RelL2, RelL1, DSSIM, L1, MSE) * (linear, tmap w/o gamma, tmap gamma=2.2, tmap gamma=adaptive) + time
     results = [[0 for i in range(len(scenes)+1)] for j in range(num_metrics * (len(spps)))]
-    # print('size1', len(results), len(results[0]))
     results_input = [[0 for i in range(len(scenes)+1)] for j in range(num_metrics * len(spps))]
 
     # formatting

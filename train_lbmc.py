@@ -18,24 +18,25 @@ from torch.utils.data import DataLoader
 
 # Cho et al. dependency
 import configs
-from train_kpcn import validate_kpcn, train, train_epoch_kpcn
+from train_kpcn import train
+from support.WCMC import *
 
-from support.networks import PathNet
+# Our dependency
 from support.interfaces import LBMCInterface
 from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
-from support.losses import TonemappedRelativeMSE, RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
 
-# Gharbi et al. dependency
+# Munkberg et al. dependency
+from support.NDLE import *
 sys.path.insert(1, configs.PATH_LBMC)
-try:
-    from train import tonemap
-    from utils import SMAPE, PSNR
-    from train import LEARNING_RATE
-    from layer_network import LayerNet
-except ImportError as error:
-    print('Put appropriate paths in the configs.py file.')
-    raise
+# try:
+#     from train import tonemap
+#     from utils import SMAPE, PSNR
+#     from train import LEARNING_RATE
+#     from layer_network import LayerNet
+# except ImportError as error:
+#     print('Put appropriate paths in the configs.py file.')
+#     raise
 # from ttools.modules.image_operators import crop_like
 
 
@@ -220,16 +221,6 @@ def main(args):
 
 
 if __name__ == '__main__':
-    """ NOTE: Example Training Scripts """
-    """ LBMC Vanilla
-        Train a LBMC model from scratch: 
-            python train_lbmc.py --single_gpu --batch_size 8 --val_epoch 1 --data_dir /mnt/ssd3/iycho/KPCN --model_name LBMC_vanilla --desc "LBMC_vanilla" --num_epoch 6
-    """
-    
-    """ LBMC Manifold
-        Train a LBMC model from scratch: 
-            python train_lbmc.py --single_gpu --batch_size 8 --val_epoch 1 --data_dir /mnt/ssd3/iycho/KPCN --model_name LBMC_Manifold_P3 --desc "LBMC_Manifold_P3" --num_epoch 6 --use_llpm_buf --manif_learn --manif_loss FMSE
-    """
 
     BS_VAL = 4 # validation set batch size
 

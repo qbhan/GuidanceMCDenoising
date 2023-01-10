@@ -19,21 +19,13 @@ from tensorboardX import SummaryWriter
 
 # Cho et al. dependency
 import configs
-from support.networks import PathNet
+from support.WCMC import *
 # our strategy
 from support.networks import InterpolationNet
 from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
-from support.losses import RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
 from support.interfaces import EnsembleKPCNInterface
 
-# Gharbi et al. dependency
-sys.path.insert(1, configs.PATH_SBMC)
-try:
-    from sbmc import KPCN
-except ImportError as error:
-    print('Put appropriate paths in the configs.py file.')
-    raise
 
 # import logging
 from tensorboardX import SummaryWriter

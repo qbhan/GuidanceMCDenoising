@@ -10,57 +10,9 @@ import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-# Gharbi et al. dependency
-#
+
 # Cho et al. dependency
 from support.utils import crop_like
-from torchvision.utils import save_image
-import os
-
-import configs
-sys.path.insert(1, configs.PATH_SBMC)
-try:
-    from sbmc import modules as ops
-except ImportError as error:
-    print('Put appropriate paths in the configs.py file.')
-    raise
-
-from support.utils import ToneMapBatch
-
-def score_map(img, tgt, error_type='L1', Tonemapping=False):
-    # with torch.no_grad():
-    #     score = torch.clip(torch.abs((ToneMapBatch(img) - ToneMapBatch(tgt))), 0.0, 1.0)
-    #     return score
-    eps = 0.000001
-    # print('score type', error_type)
-    if Tonemapping:
-        img, tgt = ToneMapBatch(img), ToneMapBatch(tgt)
-    if error_type == 'L1':
-        score = torch.abs((img - tgt)).mean(dim=1)
-    elif error_type == 'MSE':
-        # print(img.shape, tgt.shape)
-        score = torch.square((img - tgt)).mean(dim=1)
-    elif error_type == 'relMSE':
-        mse = torch.square((img - tgt))
-        score = mse / (torch.square(tgt) + eps)
-        score = score.mean(1)
-    elif error_type == 'relL1':
-        l1 = torch.abs((img - tgt))
-        score = l1 / (torch.abs(tgt) + eps)
-        score = score.mean(1)
-    elif error_type == 'SMAPE':
-        score = (torch.abs((img - tgt))) / (
-            eps + torch.abs(img) + torch.abs(tgt)
-        )
-        score = score.mean(1)
-        # print(score.shape)
-    score = torch.clip(score, 0.0, None) 
-    # score = torch.nn.
-    score = score.unsqueeze(1)
-    return score.detach()
-
-
-  
 
 class BaseInterface(metaclass=ABCMeta):
 
@@ -126,7 +78,7 @@ class BaseInterface(metaclass=ABCMeta):
 
 class KPCNInterface(BaseInterface):
 
-    def __init__(self, models, optims, loss_funcs, args, visual=False, use_llpm_buf=False, manif_learn=False, w_manif=0.1, train_branches=True, disentanglement_option="m11r11", use_skip=False, use_pretrain=False, apply_loss_twice=False):
+    def __init__(self, models, optims, loss_funcs, args, visual=False, use_llpm_buf=False, manif_learn=False, w_manif=0.1, train_branches=True, disentanglement_option="m11r11"):
         if manif_learn:
             assert 'backbone_diffuse' in models, "argument `models` dictionary should contain `'backbone_diffuse'` key."
             assert 'backbone_specular' in models, "argument `models` dictionary should contain `'backbone_specular'` key."
@@ -143,12 +95,8 @@ class KPCNInterface(BaseInterface):
         super(KPCNInterface, self).__init__(models, optims, loss_funcs, args, visual, use_llpm_buf, manif_learn, w_manif)
         self.train_branches = train_branches
         self.disentanglement_option = disentanglement_option
-        self.use_skip = use_skip
-        self.use_pretrain = use_pretrain
-        self.apply_loss_twice = apply_loss_twice
         self.cnt = 0
         self.epoch = 0
-        self.no_p_model = args.no_p_model
         self.no_gbuf = args.no_gbuf
 
     def __str__(self):
@@ -180,15 +128,6 @@ class KPCNInterface(BaseInterface):
             self.models['backbone_diffuse'].zero_grad()
             self.models['backbone_specular'].zero_grad()
             p_buffers = self._manifold_forward(batch)
-
-            # if self.iters % 1000 == 1:
-            #     pimg = np.mean(np.transpose(p_buffers['diffuse'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
-            #     pimg = np.clip(pimg, 0.0, 1.0)
-            #     plt.imsave('../LLPM_results/pbuf_%s_diffuse.png'%(self.args.model_name), pimg)
-
-            #     pimg = np.mean(np.transpose(p_buffers['specular'].detach().cpu().numpy()[0,:,:3,...], (2, 3, 0, 1)), 2)
-            #     pimg = np.clip(pimg, 0.0, 1.0)
-            #     plt.imsave('../LLPM_results/pbuf_%s_specular.png'%(self.args.model_name), pimg)
             
             """ Feature disentanglement """
             _, _, c, _, _ = p_buffers['diffuse'].shape
@@ -260,18 +199,12 @@ class KPCNInterface(BaseInterface):
         self._optimization()
 
     def _manifold_forward(self, batch):
-        if not self.no_p_model:
-            p_buffer_diffuse = self.models['backbone_diffuse'](batch)
-            p_buffer_specular = self.models['backbone_specular'](batch)
-            p_buffers = {
-                'diffuse': p_buffer_diffuse,
-                'specular': p_buffer_specular
-            }
-        else:
-            p_buffers = {
-                'diffuse': batch['paths'],
-                'specular': batch['paths']
-            }
+        p_buffer_diffuse = self.models['backbone_diffuse'](batch)
+        p_buffer_specular = self.models['backbone_specular'](batch)
+        p_buffers = {
+            'diffuse': p_buffer_diffuse,
+            'specular': p_buffer_specular
+        }
         return p_buffers
 
     def _regress_forward(self, batch):
@@ -283,8 +216,7 @@ class KPCNInterface(BaseInterface):
         assert 'specular' in out
 
         total, diffuse, specular = out['radiance'], out['diffuse'], out['specular']
-        if self.use_skip:
-            gbuf_total, gbuf_diffuse, gbuf_specular = out['gbuf_radiance'], out['gbuf_diffuse'], out['gbuf_specular']
+
         loss_dict = {}
         tgt_total = crop_like(batch['target_total'], total)
         if self.train_branches: # training diffuse and specular branches
@@ -297,30 +229,6 @@ class KPCNInterface(BaseInterface):
             loss_dict['l_diffuse'] = L_diffuse.detach()
             loss_dict['l_specular'] = L_specular.detach()
 
-            # joint training refinement & denoising
-            if self.use_skip and not self.use_pretrain:
-                L_gbuf_diffuse = self.loss_funcs['l_diffuse'](gbuf_diffuse, tgt_diffuse)
-
-                L_gbuf_specular = self.loss_funcs['l_specular'](gbuf_specular, tgt_specular)
-
-                loss_dict['l_gbuf_diffuse'] = L_gbuf_diffuse.detach()
-                loss_dict['l_gbuf_specular'] = L_gbuf_specular.detach()
-    
-                L_diffuse += L_gbuf_diffuse
-                L_specular += L_gbuf_specular
-            
-            if self.apply_loss_twice:
-                # backward with kernel only from g-buffer
-                diffuse_g, specular_g = out['gbuf_diffuse'], out['gbuf_specular']
-                # tgt_diffuse_p = crop_like(batch['target_diffuse'], diffuse_g)
-                L_diffuse_p = self.loss_funcs['l_diffuse'](diffuse_g, tgt_diffuse)
-
-                # tgt_specular_p = crop_like(batch['target_specular'], specular_g)
-                L_specular_p = self.loss_funcs['l_specular'](specular_g, tgt_specular)
-
-                loss_dict['l_diffuse_p'] = L_diffuse_p.detach()
-                loss_dict['l_specular_p'] = L_specular_p.detach()
-
             if self.manif_learn:
                 p_buffer_diffuse = crop_like(p_buffers['diffuse'], diffuse)
                 L_manif_diffuse = self.loss_funcs['l_manif'](p_buffer_diffuse, tgt_diffuse)
@@ -332,34 +240,18 @@ class KPCNInterface(BaseInterface):
 
                 loss_dict['l_manif_diffuse'] = L_manif_diffuse.detach()
                 loss_dict['l_manif_specular'] = L_manif_specular.detach()
-
-                del p_buffer_diffuse
-                del p_buffer_specular
             
             L_diffuse.backward()
             L_specular.backward()
 
             with torch.no_grad():
-                L_total = self.loss_funcs['l_recon'](total, tgt_total)
-                
-                if self.apply_loss_twice:
-                    total_g = out['gbuf_radiance']
-                    tgt_total_g = crop_like(batch['target_total'], total_g)
-                    L_total_g = self.loss_funcs['l_recon'](total_g, tgt_total_g)
-                    loss_dict['l_total_g'] = L_total_g.detach()
-                
+                L_total = self.loss_funcs['l_recon'](total, tgt_total)                
                 loss_dict['l_total'] = L_total.detach()
         else: # post-training the entire system
             L_total = self.loss_funcs['l_recon'](total, tgt_total)
-            if self.apply_loss_twice:
-                    total_g = out['radiance_p']
-                    tgt_total_g = crop_like(batch['target_total'], total_g)
-                    L_total += self.loss_funcs['l_recon'](total_g, tgt_total_g)
             loss_dict['l_total'] = L_total.detach()
             L_total.backward()
         
-        del diffuse
-        del specular  
         with torch.no_grad():
             loss_dict['rmse'] = self.loss_funcs['l_test'](total, tgt_total).detach()
         self.cnt += 1
@@ -447,19 +339,6 @@ class KPCNInterface(BaseInterface):
             self.m_losses['m_val'] = torch.tensor(0.0, device=L_total.device)
         self.m_losses['m_val'] += L_total.detach()
 
-        if self.use_skip and not self.use_pretrain:
-            rad_dict['g_radiance'] = out['gbuf_radiance']
-            rad_dict['g_diffuse'] = out['gbuf_diffuse']
-            rad_dict['g_specular'] = out['gbuf_specular']
-            kernel_dict['g_diffuse'] = out['k_g_diffuse']
-            kernel_dict['g_specular'] = out['k_g_specular']
-            L_gbuf_total = self.loss_funcs['l_test'](out['gbuf_radiance'], tgt_total)
-            if self.m_losses['m_gbuf_val'] == 0.0 and self.m_losses['m_gbuf_val'].device != L_gbuf_total.device:
-                self.m_losses['m_gbuf_val'] = torch.tensor(0.0, device=L_gbuf_total.device)
-            L_gbuf_total = self.loss_funcs['l_test'](out['gbuf_radiance'], tgt_total)
-            self.m_losses['m_gbuf_val'] += L_gbuf_total.detach()
-
-
         return out['radiance'],  p_buffers, rad_dict, kernel_dict, None
 
     def get_epoch_summary(self, mode, norm):
@@ -485,7 +364,7 @@ class KPCNInterface(BaseInterface):
 
 class AdvMCDInterface(BaseInterface):
 
-    def __init__(self, models, optims, loss_funcs, args, visual=False, use_llpm_buf=False, manif_learn=False, w_manif=0.1, train_branches=True, disentanglement_option="m11r11", use_skip=False, use_pretrain=False, apply_loss_twice=False):
+    def __init__(self, models, optims, loss_funcs, args, visual=False, use_llpm_buf=False, manif_learn=False, w_manif=0.1, train_branches=True, disentanglement_option="m11r11"):
         if manif_learn:
             assert 'backbone_diffuse' in models, "argument `models` dictionary should contain `'backbone_diffuse'` key."
             assert 'backbone_specular' in models, "argument `models` dictionary should contain `'backbone_specular'` key."
@@ -512,7 +391,6 @@ class AdvMCDInterface(BaseInterface):
         self.D_init_iters = 0
         self.gan_weight = 5e-3
         self.gp_weight = 10.0
-        # self.step = args.start_epoch * 14400 #hardcoded
         self.random_pt = torch.Tensor(1, 1, 1, 1).cuda()
         
 

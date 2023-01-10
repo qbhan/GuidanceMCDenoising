@@ -18,8 +18,8 @@ from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
 
 # Cho et al. dependency
-import configs
-from support.networks import PathNet
+# from support.networks import PathNet
+from support.WCMC import *
 # our strategy
 from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
@@ -27,12 +27,14 @@ from support.losses import RelativeMSE, FeatureMSE, GlobalRelativeSimilarityLoss
 from support.interfaces import KPCNInterface
 
 # Gharbi et al. dependency
-sys.path.insert(1, configs.PATH_SBMC)
-try:
-    from sbmc import KPCN
-except ImportError as error:
-    print('Put appropriate paths in the configs.py file.')
-    raise
+# sys.path.insert(1, configs.PATH_SBMC)
+# try:
+#     from sbmc import KPCN
+# except ImportError as error:
+#     print('Put appropriate paths in the configs.py file.')
+#     raise
+# Bako et al. dependency
+# from support.networks import KPCN
 
 
 def logging(writer, epoch, s, split, relL2, best_relL2):
@@ -188,9 +190,9 @@ def init_data(args):
     # Initialize datasets
     datasets = {}    
     datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
-        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
     datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
-        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3, use_single=args.use_single)
+        use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
     
     # Initialize dataloaders
     dataloaders = {}
@@ -244,10 +246,7 @@ def init_model(dataset, args):
             models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
             models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
         else:
-            if args.kpcn_ref:
-                n_in = dataset['train'].dncnn_in_size + 3
-            else:
-                n_in = dataset['train'].dncnn_in_size
+            n_in = dataset['train'].dncnn_in_size
             
             models['dncnn'] = KPCN(n_in, width=50)
             print('Initialize KPCN for vanilla buffers (# of input channels: %d).'%(n_in))
@@ -340,7 +339,8 @@ def init_model(dataset, args):
             print('Manifold loss: None (i.e., ablation study)')
 
         # Initialize a training interface (NOTE: modified for each model)
-        itf = KPCNInterface(models, optims, loss_funcs, args, visual=args.visual, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, w_manif=w_manif, train_branches=args.train_branches, disentanglement_option=args.disentangle, use_pretrain=args.use_pretrain)
+
+        itf = KPCNInterface(models, optims, loss_funcs, args, visual=args.visual, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn, w_manif=w_manif, train_branches=args.train_branches, disentanglement_option=args.disentangle)
         if is_pretrained:
             print('Use the checkpoint best error %.3e'%(args.best_err))
             itf.best_err = args.best_err
@@ -350,7 +350,11 @@ def init_model(dataset, args):
     if not os.path.isdir(args.save):
         os.mkdir(args.save)
 
-    return interfaces, None
+    params = {}
+    params['plots'] = {}
+    params['data_device'] = 1 if torch.cuda.device_count() > 1 and not args.single_gpu else args.device_id
+
+    return interfaces, params
 
 
 def main(args):
@@ -367,30 +371,6 @@ def main(args):
 
 
 if __name__ == "__main__":
-    """ NOTE: Example Training Scripts """
-    """ KPCN Vanilla
-        Train two branches (i.e., diffuse and specular):
-            python cp_train_kpcn.py --single_gpu --batch_size 8 --val_epoch 1 --data_dir /mnt/ssd3/iycho/KPCN --model_name KPCN_vanilla --desc "KPCN vanilla" --num_epoch 8 --lr_dncnn 1e-4 --train_branches
-
-        Post-joint training ('fine-tuning' according to the original authors): 
-            python cp_train_kpcn.py --single_gpu --batch_size 8 --val_epoch 1 --data_dir /mnt/ssd3/iycho/KPCN --model_name KPCN_vanilla --desc "KPCN vanilla" --num_epoch 10 --lr_dncnn 1e-6 --start_epoch ?
-    """
-
-    """ KPCN Manifold
-        Train two branches (i.e., diffuse and specular):
-            python cp_train_kpcn.py --single_gpu --batch_size 8 --val_epoch 1 --data_dir /mnt/ssd3/iycho/KPCN --model_name KPCN_manifold_FMSE --desc "KPCN manifold FMSE" --num_epoch 8 --manif_loss FMSE --lr_dncnn 1e-4 --lr_pnet 1e-4 --use_llpm_buf --manif_learn --w_manif 0.1 --train_branches
-
-        Post-joint training:
-            python cp_train_kpcn.py --single_gpu --batch_size 8 --val_epoch 1 --data_dir /mnt/ssd3/iycho/KPCN --model_name KPCN_manifold_FMSE --desc "KPCN manifold FMSE" --num_epoch 10 --manif_loss FMSE --lr_dncnn 1e-6 --lr_pnet 1e-6 --use_llpm_buf --manif_learn --w_manif 0.1 --start_epoch <best pre-training epoch>
-    """
-
-    """ KPCN Path (ablation study)
-        Train two branches (i.e., diffuse and specular):
-            python cp_train_kpcn.py --single_gpu --batch_size 8 --val_epoch 1 --data_dir /mnt/ssd3/iycho/KPCN --model_name KPCN_path --desc "KPCN ablation study" --num_epoch 8 --lr_dncnn 1e-4 --lr_pnet 1e-4 --use_llpm_buf --train_branches
-
-        Post-joint training:
-            python cp_train_kpcn.py --single_gpu --batch_size 8 --val_epoch 1 --data_dir /mnt/ssd3/iycho/KPCN --model_name KPCN_path --desc "KPCN ablation study" --num_epoch 10 --lr_dncnn 1e-6 --lr_pnet 1e-6 --use_llpm_buf --start_epoch <best pre-training epoch>
-    """
 
     BS_VAL = 4 # validation set batch size
 

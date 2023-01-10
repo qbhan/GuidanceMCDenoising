@@ -22,21 +22,12 @@ from support.utils import BasicArgumentParser
 from support.losses import RelativeMSE
 
 # Cho et al. dependency
-import configs
-from support.networks import PathNet
-from support.losses import FeatureMSE, GlobalRelativeSimilarityLoss
+from support.WCMC import *
 # Xu et al. dependency
-from support.networks import AdvMCD_Discriminator, AdvMCD_Generator
-from support.modules import Generator, Discriminator
-from support.losses import WGANLoss, GradientPenaltyLoss
-
+from support.AdvMCD import *
 
 from support.interfaces import AdvMCDInterface
-from train_kpcn import validate_kpcn, train, train_epoch_kpcn
-
-# import logging
-from tensorboardX import SummaryWriter
-from train_kpcn import logging, logging_training
+from train_kpcn import train
 
 BS_VAL = 4
 
@@ -97,10 +88,13 @@ def init_model(dataset, args, rank=0):
                     p_in = 10 + n_out + 1 #23
                 else:
                     p_in = 46
-                models['generator_diffuse'] = AdvMCD_Generator()
+                models['generator_diffuse'] = Generator()
+                models['generator_specular'] = Generator()
+                models['discriminator_diffuse'] = Discriminator()
+                models['discriminator_specular'] = Discriminator()
                 print('Initialize AdvMCD for path descriptors (# of input channels: %d).'%(n_in))
         else:
-            n_in = dataset['train'].dncnn_in_size
+            # n_in = dataset['train'].dncnn_in_size
             models['generator_diffuse'] = Generator()
             models['generator_specular'] = Generator()
             models['discriminator_diffuse'] = Discriminator()
@@ -227,10 +221,6 @@ def init_model(dataset, args, rank=0):
         'plots': {},
         'data_device': 1 if torch.cuda.device_count() > 1 and not args.single_gpu else args.device_id,
     }
-    if args.visual:
-        params['vis'] = visdom.Visdom(server='http://localhost')
-    else:
-        print('No visual.')
     
     # Make the save directory if needed
     if not os.path.isdir(args.save):
@@ -251,30 +241,6 @@ def main(args):
     train(interfaces, dataloaders, params, args)
 
 if __name__ == "__main__":
-    """ NOTE: Example Training Scripts """
-    """ KPCN Vanilla
-        Train two branches (i.e., diffuse and specular):
-            python cp_train_kpcn.py --single_gpu --batch_size 8 --val_epoch 1 --data_dir /mnt/ssd3/iycho/KPCN --model_name KPCN_vanilla --desc "KPCN vanilla" --num_epoch 8 --lr_dncnn 1e-4 --train_branches
-
-        Post-joint training ('fine-tuning' according to the original authors): 
-            python cp_train_kpcn.py --single_gpu --batch_size 8 --val_epoch 1 --data_dir /mnt/ssd3/iycho/KPCN --model_name KPCN_vanilla --desc "KPCN vanilla" --num_epoch 10 --lr_dncnn 1e-6 --start_epoch ?
-    """
-
-    """ KPCN Manifold
-        Train two branches (i.e., diffuse and specular):
-            python cp_train_kpcn.py --single_gpu --batch_size 8 --val_epoch 1 --data_dir /mnt/ssd3/iycho/KPCN --model_name KPCN_manifold_FMSE --desc "KPCN manifold FMSE" --num_epoch 8 --manif_loss FMSE --lr_dncnn 1e-4 --lr_pnet 1e-4 --use_llpm_buf --manif_learn --w_manif 0.1 --train_branches
-
-        Post-joint training:
-            python cp_train_kpcn.py --single_gpu --batch_size 8 --val_epoch 1 --data_dir /mnt/ssd3/iycho/KPCN --model_name KPCN_manifold_FMSE --desc "KPCN manifold FMSE" --num_epoch 10 --manif_loss FMSE --lr_dncnn 1e-6 --lr_pnet 1e-6 --use_llpm_buf --manif_learn --w_manif 0.1 --start_epoch <best pre-training epoch>
-    """
-
-    """ KPCN Path (ablation study)
-        Train two branches (i.e., diffuse and specular):
-            python cp_train_kpcn.py --single_gpu --batch_size 8 --val_epoch 1 --data_dir /mnt/ssd3/iycho/KPCN --model_name KPCN_path --desc "KPCN ablation study" --num_epoch 8 --lr_dncnn 1e-4 --lr_pnet 1e-4 --use_llpm_buf --train_branches
-
-        Post-joint training:
-            python cp_train_kpcn.py --single_gpu --batch_size 8 --val_epoch 1 --data_dir /mnt/ssd3/iycho/KPCN --model_name KPCN_path --desc "KPCN ablation study" --num_epoch 10 --lr_dncnn 1e-6 --lr_pnet 1e-6 --use_llpm_buf --start_epoch <best pre-training epoch>
-    """
 
     BS_VAL = 4 # validation set batch size
 

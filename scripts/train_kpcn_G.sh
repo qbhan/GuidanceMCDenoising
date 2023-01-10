@@ -3,8 +3,8 @@ python train_kpcn.py \
     --batch_size 8 \
     --val_epoch 1 \
     --data_dir /home/kyubeom/ssd1/KPCN \
-    --model_name KPCN_G \
-    --desc "KPCN_G" \
+    --model_name KPCN_G_test \
+    --desc "KPCN_G_test" \
     --num_epoch 10 \
     --lr_dncnn 1e-4 \
     --device_id 3 \
