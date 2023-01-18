@@ -189,7 +189,7 @@ Main Utils
 def init_data(args):
     # Initialize datasets
     datasets = {}    
-    datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
+    datasets['train'] = MSDenoiseDataset(args.data_dir, 2, 'kpcn', 'train', args.batch_size, 'random',
         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
     datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
@@ -225,6 +225,14 @@ def init_model(dataset, args):
         else:
             print('Post-train two branches of KPCN.')
             
+        # set width of KPCN
+        if 'half' in args.model_name:
+            width = 50
+            print('Use half of original KPCN capaticity, width :', width)
+        else:
+            width = 100
+            print('Use all of original KPCN capaticity, width :', width)
+        
         if args.use_llpm_buf:
             if args.disentangle in ['m10r01', 'm11r01']:
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size // 2
@@ -234,7 +242,7 @@ def init_model(dataset, args):
             else:
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size
             # models['dncnn'] = KPCN(n_in, width=)
-            models['dncnn'] = KPCN(n_in, width=100)
+            models['dncnn'] = KPCN(n_in, width=width)
             print('Initialize KPCN for path descriptors (# of input channels: %d).'%(n_in))
 
             n_in = dataset['train'].pnet_in_size
