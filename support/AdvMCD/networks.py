@@ -7,7 +7,7 @@ class Generator(nn.Module):
     Denoising model(i.e., Generator) based on direct prediction (Xu et al. 2019)
     https://github.com/mcdenoising/AdvMCDenoise/blob/master/codes/models/arch/generator_cfm.py
     """
-    def __init__(self, res_ch=64, cond_ch=128):
+    def __init__(self, feat_ch=7, res_ch=64, cond_ch=128):
         super(Generator, self).__init__()
         self.conv0 = nn.Conv2d(3, res_ch, 3, 1, 1)
 
@@ -26,7 +26,7 @@ class Generator(nn.Module):
         )
 
         self.Condition_process = nn.Sequential(
-            nn.Conv2d(7, cond_ch, 3, 1, 1),
+            nn.Conv2d(feat_ch, cond_ch, 3, 1, 1),
             nn.LeakyReLU(0.1, True),
             nn.Conv2d(cond_ch, cond_ch, 1),
             nn.LeakyReLU(0.1, True),
