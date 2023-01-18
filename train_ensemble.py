@@ -18,14 +18,16 @@ from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
 
 # Cho et al. dependency
-import configs
 from support.WCMC import *
+
+# Xu et al. dependency
+from support.AdvMCD import *
+
 # our strategy
 from support.networks import InterpolationNet
 from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
 from support.interfaces import EnsembleKPCNInterface
-
 
 # import logging
 from tensorboardX import SummaryWriter
@@ -44,6 +46,13 @@ PRE_MODEL_HALF_FN = {
                     'dncnn_P': 'weights_full_4/e6_KPCN_P_half.pth',
                     'backbone_diffuse': 'weights_full_4/e6_KPCN_P_half.pth',
                     'backbone_specular': 'weights_full_4/e6_KPCN_P_half.pth',
+                }
+
+PRE_MODEL_FN_2 = {
+                    'dncnn_G': 'weights_full_4/e7_KPCN_G.pth',
+                    'dncnn_P': 'weights_full_4/e8_KPCN_P.pth',
+                    'backbone_diffuse': 'weights_full_4/e8_KPCN_P.pth',
+                    'backbone_specular': 'weights_full_4/e8_KPCN_P.pth',
                 }
 
 def logging(writer, epoch, s, split, relL2, best_relL2):
@@ -256,6 +265,16 @@ def init_model(dataset, args, rank=0):
             print('Train diffuse and specular branches indenpendently.')
         else:
             print('Train both branches with final radiance and single ensemble stream.')
+
+
+        # set width of KPCN
+        if 'half' in args.model_name:
+            width = 50
+            print('Use half of original capaticity, width :', width)
+        else:
+            width = 100
+            print('Use all of original capaticity, width :', width)
+
         g_in = dataset['train'].dncnn_in_size
         if args.use_llpm_buf:
             if args.disentangle in ['m10r01', 'm11r01']:
@@ -269,14 +288,25 @@ def init_model(dataset, args, rank=0):
             models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
             p_in = 10 + n_out + 1 + 1 #23
             # two stream denoisers
-            models['dncnn_G'] = KPCN(34, width=50)
-            p_in = 23 # image 10 + pbuffer 12 + pvar 1
-            models['dncnn_P'] = KPCN(p_in, width=50)
+            if 'KPCN' in args.model_name:
+                models['dncnn_G'] = KPCN(34, width=width)
+                p_in = 23 # image 10 + pbuffer 12 + pvar 1
+                models['dncnn_P'] = KPCN(p_in, width=width)
+            elif 'ADV' in args.model_name:
+                feat_ch = 7
+                models['generator_diffuse_G'] = Generator(feat_ch=feat_ch)
+                models['generator_specular_G'] = Generator(feat_ch=feat_ch)
+                feat_ch = pnet_out_size + 1
+                models['generator_diffuse_P'] = Generator(feat_ch=feat_ch)
+                models['generator_specular_P'] = Generator(feat_ch=feat_ch)
+                models['discriminator_diffuse'] = Discriminator()
+                models['discriminator_specular'] = Discriminator()
 
             if args.feature:
-                n_in = 34 + p_in - 20 + 6
-                # n_in = 34 - 10 + 6 # G-buffer only
-                # n_in = p_in - 10 + 6 # P-buffer only
+                if 'KPCN' in args.model_name:
+                    n_in = 34 + p_in - 20 + 6
+                elif 'ADV' in args.model_name:
+                    n_in = 7 + pnet_out_size + 1 + 6
             else:
                 n_in = 6
             models['interpolate_diffuse'] = InterpolationNet(n_in, model_type=args.model_type)
@@ -300,9 +330,11 @@ def init_model(dataset, args, rank=0):
                 for model_name in models:
                     # if model_name in PRE_MODEL_FN:
                     if model_name in PRE_MODEL_HALF_FN:
+                    # if model_name in PRE_MODEL_FN_2:
                         print(model_name)
                         # ck_m = torch.load(PRE_MODEL_FN[model_name], map_location='cuda:{}'.format(args.device_id))
                         ck_m = torch.load(PRE_MODEL_HALF_FN[model_name], map_location='cuda:{}'.format(args.device_id))
+                        # ck_m = torch.load(PRE_MODEL_FN_2[model_name], map_location='cuda:{}'.format(args.device_id))
                         if 'dncnn' in model_name: pre_model_name = 'dncnn'
                         else: pre_model_name = model_name
                         try:
@@ -391,10 +423,15 @@ def init_model(dataset, args, rank=0):
                     continue
             else:
                 # if model_name in PRE_MODEL_FN:
-                if model_name in PRE_MODEL_HALF_FN:
+                if 'half' in args.model_name:
+                    MODEL_FN = PRE_MODEL_HALF_FN
+                else:
+                    MODEL_FN = PRE_MODEL_FN_2
+                if model_name in MODEL_FN:
                     # print(model_name)
                     # ck_m = torch.load(PRE_MODEL_FN[model_name], map_location='cuda:{}'.format(args.device_id))
-                    ck_m = torch.load(PRE_MODEL_HALF_FN[model_name], map_location='cuda:{}'.format(args.device_id))
+                    ck_m = torch.load(MODEL_FN[model_name], map_location='cuda:{}'.format(args.device_id))
+                    # ck_m = torch.load(PRE_MODEL_FN_2[model_name], map_location='cuda:{}'.format(args.device_id))
                     if 'dncnn' in model_name: pre_model_name = 'dncnn'
                     else: pre_model_name = model_name
                     if 'optims' in ck_m:
@@ -424,6 +461,10 @@ def init_model(dataset, args, rank=0):
             'l_recon': nn.L1Loss(),
             'l_test': RelativeMSE()
         }
+        if 'ADV' in args.model_name:
+            loss_funcs['l_gan'] = WGANLoss()
+            loss_funcs['l_gp'] = GradientPenaltyLoss()
+
         if args.manif_learn:
             if args.manif_loss == 'FMSE':
                 loss_funcs['l_manif'] = FeatureMSE(non_local = not args.local)
@@ -439,7 +480,10 @@ def init_model(dataset, args, rank=0):
             loss_funcs[loss_name].cuda()
 
         # Initialize a training interface (NOTE: modified for each model)
-        itf = EnsembleKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn)
+        if 'KPCN' in args.model_name:
+            itf = EnsembleKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn)
+        elif 'ADV' in args.model_name:
+            pass
         if is_pretrained and not args.load:
             # TODO: needs change in automatically updating best_err
             print('Use the checkpoint best error %.3e'%(args.best_err))
@@ -459,167 +503,17 @@ def init_model(dataset, args, rank=0):
     return interfaces, params
 
 
-# TODO: Should work on dataset preprocessing part. Currently not working
-def ddp_train(rank, args):
-    # set up multi-processing
-    torch.distributed.init_process_group("gloo", rank=rank, world_size=4) # world_size: number of processes
-    torch.cuda.set_device(rank)
-    dataset, dataloaders = init_data(args)
-    interfaces, params = init_model(dataset, args, rank)
-    assert len(interfaces) > 1 or len(params) > 1
-
-    ##### important!!!
-    # make sure different processes sample different patches
-    np.random.seed((rank + 1) * 777)
-    random.seed((rank+1) * 777)
-    # make sure different processes have different perturbations
-    torch.manual_seed((rank + 1) * 777)
-
-    # only main process should log
-    if rank == 0:
-        writer = SummaryWriter(os.path.join(args.summary, args.desc))
-    
-    for epoch in range(args.start_epoch, args.num_epoch):
-        if len(interfaces) == 1:
-            save_fn = args.model_name + '.pth'
-        else:
-            raise NotImplementedError('Multiple interfaces')
-
-        start_time = time.time()
-
-        # train
-        for itf in interfaces:
-            itf.to_train_mode()
-        for i, batch in enumerate(dataloaders['train']):
-            # Transfer data from the cpu to gpu memory
-            for k in batch:
-                if not batch[k].__class__ == torch.Tensor:
-                    continue
-                batch[k] = batch[k].cuda()
-
-
-            # Main
-            for itf in interfaces:
-                itf.preprocess(batch, args.use_single)
-                itf.train_batch(batch)
-        
-        summaries = []
-        if not args.visual:
-            for itf in interfaces:
-                summaries.append(itf.get_epoch_summary(mode='train', norm=len(dataloaders['train'])))
-
-        itf.epoch += 1
-        itf.cnt = 0
-        
-        # only main process should log
-        if rank == 0:
-            logging_training(writer, epoch, 0, 1, summaries)
-            print('[][] Elapsed time for one epoch: %d'%(time.time() - start_time))
-
-
-        # save best model only on the main process
-        if rank == 0:
-            for i, itf in enumerate(interfaces):
-                tmp_params = params.copy()
-                tmp_params['vis'] = None
-
-                state_dict = {
-                    'description': args.desc, #
-                    'start_epoch': epoch + 1,
-                    'model': str(itf.models['dncnn']),
-                    'params': tmp_params,
-                    'optims': itf.optims,
-                    'args': args,
-                    'best_err': itf.best_err
-                }
-
-                for model_name in itf.models:
-                    state_dict['state_dict_' + model_name] = itf.models[model_name].state_dict()
-
-                if not args.not_save:
-                    torch.save(state_dict, os.path.join(args.save, 'latest_' + save_fn))
-
-        # validate
-        if (epoch % args.val_epoch == args.val_epoch - 1):
-            if rank == 0:
-                print('[][] Validation')
-            # summaries = validate_kpcn(epoch, interfaces, dataloaders, params, 0, args)
-            print('[][] Validation (epoch %d split %d)' % (epoch, 0))
-            for itf in interfaces:
-                itf.to_eval_mode()
-
-            summaries = []
-            with torch.no_grad():
-                for batch in tqdm(dataloaders['val'], leave=False, ncols=70):
-                    # Transfer data from the cpu to gpu memory
-                    for k in batch:
-                        if not batch[k].__class__ == torch.Tensor:
-                            continue
-                        batch[k] = batch[k].cuda()
-
-                    # Main
-                    for itf in interfaces:
-                        itf.validate_batch(batch)
-
-            for itr in interfaces:
-                summaries.append(itf.get_epoch_summary(mode='eval', norm=len(dataloaders['val'])))
-
-            # save best model only on the main process
-            if rank == 0:
-                for i, itf in enumerate(interfaces):
-                    if summaries[i] < itf.best_err:
-                        itf.best_err = summaries[i]
-
-                        tmp_params = params.copy()
-                        tmp_params['vis'] = None
-
-                        state_dict = {
-                            'description': args.desc, #
-                            'start_epoch': epoch + 1,
-                            'model': str(itf.models['dncnn']),
-                            'params': tmp_params,
-                            'optims': itf.optims,
-                            'args': args,
-                            'best_err': itf.best_err
-                        }
-
-                        for model_name in itf.models:
-                            state_dict['state_dict_' + model_name] = itf.models[model_name].state_dict()
-
-                        if not args.not_save:
-                            torch.save(state_dict, os.path.join(args.save, save_fn))
-                            print('[][] Model %s saved at epoch %d.'%(save_fn, epoch))
-
-                    print('[][] Model {} RelMSE: {:.3f}e-3 \t Best RelMSE: {:.3f}e-3'.format(save_fn, summaries[i]*1000, itf.best_err*1000))
-                    logging(writer, epoch, 0, 1, summaries[i], itf.best_err)
-
-        # # Update schedulers
-        for key in params:
-            if 'sched_' in key:
-                params[key].step()
-
-    torch.distributed.destroy_process_group()
-
-
 def main(args):
     # Set random seeds
     random.seed("Inyoung Cho, Yuchi Huo, Sungeui Yoon @ KAIST")
     np.random.seed(0)
     torch.manual_seed(0)
     torch.backends.cudnn.benchmark = True  #torch.backends.cudnn.deterministic = True
-
     # Get ready
-    if not args.distributed:
-        dataset, dataloaders = init_data(args)
-        interfaces, params = init_model(dataset, args)
-        train(interfaces, dataloaders, params, args)
-    else:
-        print('gpu count', torch.cuda.device_count())
-        mp.spawn(ddp_train,
-                 args=(args,),
-                 nprocs=torch.cuda.device_count(),
-                 join=True)
 
+    dataset, dataloaders = init_data(args)
+    interfaces, params = init_model(dataset, args)
+    train(interfaces, dataloaders, params, args)
 
 if __name__ == "__main__":
 
