@@ -37,7 +37,7 @@ def init_data(args):
     AdvMCD use the same dataset with KPCN for diffuse & specular branch
     '''
     datasets = {}
-    datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
+    datasets['train'] = MSDenoiseDataset(args.data_dir, 2, 'kpcn', 'train', args.batch_size, 'random',
         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
     datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
         use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
@@ -77,24 +77,21 @@ def init_model(dataset, args, rank=0):
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size // 2
             else:
                 n_in = dataset['train'].dncnn_in_size - dataset['train'].pnet_out_size + pnet_out_size
-            if not args.use_single:
-                print('adv type', args.type)
-                # print(args.type == 'new_adv_1')
-                if args.manif_learn:
-                    n_in = dataset['train'].pnet_in_size
-                    n_out = pnet_out_size
-                    models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
-                    models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
-                    p_in = 10 + n_out + 1 #23
-                else:
-                    p_in = 46
-                models['generator_diffuse'] = Generator()
-                models['generator_specular'] = Generator()
-                models['discriminator_diffuse'] = Discriminator()
-                models['discriminator_specular'] = Discriminator()
-                print('Initialize AdvMCD for path descriptors (# of input channels: %d).'%(n_in))
+            if args.manif_learn:
+                n_in = dataset['train'].pnet_in_size
+                n_out = pnet_out_size
+                models['backbone_diffuse'] = PathNet(ic=n_in, outc=n_out)
+                models['backbone_specular'] = PathNet(ic=n_in, outc=n_out)
+            else:
+                p_in = 46
+            if not args.no_gbuf: feat_ch = 7 + pnet_out_size + 1
+            else: feat_ch = pnet_out_size + 1
+            models['generator_diffuse'] = Generator(feat_ch=feat_ch)
+            models['generator_specular'] = Generator(feat_ch=feat_ch)
+            models['discriminator_diffuse'] = Discriminator()
+            models['discriminator_specular'] = Discriminator()
+            print('Initialize AdvMCD for path descriptors (# of input channels: %d).'%(n_in))
         else:
-            # n_in = dataset['train'].dncnn_in_size
             models['generator_diffuse'] = Generator()
             models['generator_specular'] = Generator()
             models['discriminator_diffuse'] = Discriminator()
@@ -158,7 +155,11 @@ def init_model(dataset, args, rank=0):
         # Initialize optimizers
         optims = {}
         for model_name in models:
-            lr = args.lr_dncnn if 'generator' in model_name else lr_pnet
+            if 'discriminator' in model_name: lr = args.lr_D
+            elif 'backbone' in model_name: lr = lr_pnet
+            elif 'generator_diffuse' in model_name: lr = args.lr_G_diffuse
+            elif 'generator_specular' in model_name: lr = args.lr_G_specular
+            print(model_name, lr)
             optims['optim_' + model_name] = optim.Adam(models[model_name].parameters(), lr=lr)
             
             if not is_pretrained:
@@ -247,8 +248,12 @@ if __name__ == "__main__":
     parser = BasicArgumentParser()
     parser.add_argument('--desc', type=str, required=True, 
                         help='short description of the current experiment.')
-    parser.add_argument('--lr_dncnn', type=float, default=1e-4, 
-                        help='learning rate of PathNet.')
+    parser.add_argument('--lr_G_diffuse', type=float, default=1e-5, 
+                        help='learning rate of diffuse generator.')
+    parser.add_argument('--lr_G_specular', type=float, default=1e-4, 
+                        help='learning rate of specular generator.')
+    parser.add_argument('--lr_D', type=float, default=1e-4, 
+                        help='learning rate of Discriminators')
     parser.add_argument('--lr_pnet', type=float, nargs='+', default=[0.0001], 
                         help='learning rate of PathNet.')
     parser.add_argument('--lr_ckpt', action='store_true',
@@ -282,6 +287,7 @@ if __name__ == "__main__":
     parser.add_argument('--local', action='store_true', help='device id')
 
     # new arguments
+    parser.add_argument('--no_gbuf', action='store_true')
     
     
     args = parser.parse_args()
