@@ -3,8 +3,8 @@ python train_ensemble.py \
     --batch_size 8 \
     --val_epoch 1 \
     --data_dir /home/kyubeom/ssd1/KPCN \
-    --model_name KPCN_ensemble_feature_finetune_full_5_G_2 \
-    --desc "KPCN_ensemble_feature_finetune_full_5_G_2" \
+    --model_name ADV_ensemble_feature_finetune_full \
+    --desc "ADV_ensemble_feature_finetune_full" \
     --num_epoch 15 \
     --lr_dncnn 1e-6 \
     --use_llpm_buf \
@@ -15,10 +15,10 @@ python train_ensemble.py \
     --w_manif 0.1 \
     --lr_inet 1e-5 \
     --device_id 1 \
-    --save 'weights_full_3' \
-    --summary 'summary_full_3' \
+    --save 'weights_adv' \
+    --summary 'summary_adv' \
     --interpolate \
     --feature \
-    --ensemble_branches \
     --load \
-    --single_gpu
+    --single_gpu \
+    --train_branches

@@ -1198,7 +1198,9 @@ class MSDenoiseDataset(ConcatDataset):
         datasets = []
         if mode == 'train': spps = spp
         elif mode == 'val': spps = 2
-        for _s in range(spps, spp + 1):
+        print(spps)
+        # for _s in range(spps, spp + 1):
+        for _s in range(spps, 9):
             datasets.append(
                 DenoiseDataset(dir, _s, base_model, mode, batch_size,
                                sampling, use_g_buf, use_sbmc_buf, use_llpm_buf, pnet_out_size,

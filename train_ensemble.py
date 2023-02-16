@@ -27,7 +27,7 @@ from support.AdvMCD import *
 from support.networks import InterpolationNet
 from support.datasets import MSDenoiseDataset, DenoiseDataset
 from support.utils import BasicArgumentParser
-from support.interfaces import EnsembleKPCNInterface
+from support.interfaces import EnsembleKPCNInterface, EnsembleAdvMCDInterface
 
 # import logging
 from tensorboardX import SummaryWriter
@@ -42,10 +42,10 @@ PRE_MODEL_FN = {
                 }
 
 PRE_MODEL_HALF_FN = {
-                    'dncnn_G': 'weights_full_4/e6_KPCN_G_half.pth',
-                    'dncnn_P': 'weights_full_4/e6_KPCN_P_half.pth',
-                    'backbone_diffuse': 'weights_full_4/e6_KPCN_P_half.pth',
-                    'backbone_specular': 'weights_full_4/e6_KPCN_P_half.pth',
+                    'dncnn_G': 'weights_full_4/e6_KPCN_G_half_full_2.pth',
+                    'dncnn_P': 'weights_full_4/e5_KPCN_P_half_full_2.pth',
+                    'backbone_diffuse': 'weights_full_4/e5_KPCN_P_half_full_2.pth',
+                    'backbone_specular': 'weights_full_4/e5_KPCN_P_half_full_2.pth',
                 }
 
 PRE_MODEL_FN_2 = {
@@ -54,6 +54,17 @@ PRE_MODEL_FN_2 = {
                     'backbone_diffuse': 'weights_full_4/e8_KPCN_P.pth',
                     'backbone_specular': 'weights_full_4/e8_KPCN_P.pth',
                 }
+
+
+PRE_MODEL_FN_ADV = {
+    'generator_diffuse_G': 'weights_adv/e7_ADV_G_full.pth',
+    'generator_specular_G': 'weights_adv/e7_ADV_G_full.pth',
+    'generator_diffuse_P': 'weights_adv/e6_ADV_P_w01_sch1.pth',
+    'generator_diffuse_P': 'weights_adv/e6_ADV_P_w01_sch1.pth',
+    'backbone_diffuse': 'weights_adv/e6_ADV_P_w01_sch1.pth',
+    'backbone_specular': 'weights_adv/e6_ADV_P_w01_sch1.pth',
+}
+
 
 def logging(writer, epoch, s, split, relL2, best_relL2):
     writer.add_scalar('valid relL2 loss', relL2, epoch + s/split)
@@ -220,9 +231,9 @@ def init_data(args):
     datasets = {}
     if 'full' in args.desc:
         print('load full dataset')
-        datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
+        datasets['train'] = MSDenoiseDataset(args.data_dir, 2, 'kpcn', 'train', args.batch_size, 'random',
             use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
-        datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
+        datasets['val'] = MSDenoiseDataset(args.data_dir, 2, 'kpcn', 'val', BS_VAL, 'grid',
             use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
     else:
         print('load 8spp dataset')
@@ -299,8 +310,8 @@ def init_model(dataset, args, rank=0):
                 feat_ch = pnet_out_size + 1
                 models['generator_diffuse_P'] = Generator(feat_ch=feat_ch)
                 models['generator_specular_P'] = Generator(feat_ch=feat_ch)
-                models['discriminator_diffuse'] = Discriminator()
-                models['discriminator_specular'] = Discriminator()
+                # models['discriminator_diffuse'] = Discriminator()
+                # models['discriminator_specular'] = Discriminator()
 
             if args.feature:
                 if 'KPCN' in args.model_name:
@@ -326,16 +337,23 @@ def init_model(dataset, args, rank=0):
         if is_pretrained:
             # loading pretrained weight
             if args.load:
+                if 'half' in args.model_name:
+                    MODEL_FN = PRE_MODEL_HALF_FN
+                elif 'ADV' in args.model_name:
+                    MODEL_FN = PRE_MODEL_FN_ADV
+                else:
+                    MODEL_FN = PRE_MODEL_FN_2
                 # path for loading pretrained weight
                 for model_name in models:
                     # if model_name in PRE_MODEL_FN:
-                    if model_name in PRE_MODEL_HALF_FN:
+                    if model_name in MODEL_FN:
                     # if model_name in PRE_MODEL_FN_2:
                         print(model_name)
                         # ck_m = torch.load(PRE_MODEL_FN[model_name], map_location='cuda:{}'.format(args.device_id))
-                        ck_m = torch.load(PRE_MODEL_HALF_FN[model_name], map_location='cuda:{}'.format(args.device_id))
+                        ck_m = torch.load(MODEL_FN[model_name], map_location='cuda:{}'.format(args.device_id))
                         # ck_m = torch.load(PRE_MODEL_FN_2[model_name], map_location='cuda:{}'.format(args.device_id))
                         if 'dncnn' in model_name: pre_model_name = 'dncnn'
+                        if 'generator' in model_name: pre_model_name = model_name[:-2]
                         else: pre_model_name = model_name
                         try:
                             models[model_name].load_state_dict(ck_m['state_dict_' + pre_model_name])
@@ -425,6 +443,8 @@ def init_model(dataset, args, rank=0):
                 # if model_name in PRE_MODEL_FN:
                 if 'half' in args.model_name:
                     MODEL_FN = PRE_MODEL_HALF_FN
+                elif 'ADV' in args.model_name:
+                    MODEL_FN = PRE_MODEL_FN_ADV
                 else:
                     MODEL_FN = PRE_MODEL_FN_2
                 if model_name in MODEL_FN:
@@ -433,6 +453,7 @@ def init_model(dataset, args, rank=0):
                     ck_m = torch.load(MODEL_FN[model_name], map_location='cuda:{}'.format(args.device_id))
                     # ck_m = torch.load(PRE_MODEL_FN_2[model_name], map_location='cuda:{}'.format(args.device_id))
                     if 'dncnn' in model_name: pre_model_name = 'dncnn'
+                    if 'generator' in model_name: pre_model_name = model_name[:-2]
                     else: pre_model_name = model_name
                     if 'optims' in ck_m:
                         state = ck_m['optims']['optim_' + pre_model_name].state_dict()
@@ -459,7 +480,7 @@ def init_model(dataset, args, rank=0):
             'l_diffuse': nn.L1Loss(),
             'l_specular': nn.L1Loss(),
             'l_recon': nn.L1Loss(),
-            'l_test': RelativeMSE()
+            'l_test': RelativeMSE(),
         }
         if 'ADV' in args.model_name:
             loss_funcs['l_gan'] = WGANLoss()
@@ -483,7 +504,7 @@ def init_model(dataset, args, rank=0):
         if 'KPCN' in args.model_name:
             itf = EnsembleKPCNInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn)
         elif 'ADV' in args.model_name:
-            pass
+            itf = EnsembleAdvMCDInterface(models, optims, loss_funcs, args, use_llpm_buf=args.use_llpm_buf, manif_learn=args.manif_learn)
         if is_pretrained and not args.load:
             # TODO: needs change in automatically updating best_err
             print('Use the checkpoint best error %.3e'%(args.best_err))

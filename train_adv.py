@@ -209,7 +209,8 @@ def init_model(dataset, args, rank=0):
 
         for model_name in models:
             # params['sched_' + model_name] = optim.lr_scheduler.MultiStepLR(optims['optim_' + model_name], milestones=[50000, 100000, 150000, 200000])
-            optims['sched_' + model_name] = optim.lr_scheduler.StepLR(optims['optim_' + model_name], step_size=3, gamma=0.5)
+            if 'backbone' in model_name: continue
+            optims['sched_' + model_name] = optim.lr_scheduler.StepLR(optims['optim_' + model_name], step_size=1, gamma=0.5)
         # params['sched'] = optim.lr_scheduler.MultiStepLR(optims['optim_dncnn'], step_size=3, gamma=0.5, last_epoch=args.start_epoch-1)
             if is_pretrained:
                 optims['sched_' + model_name].load_state_dict(ck['optims']['sched_' + model_name].state_dict())

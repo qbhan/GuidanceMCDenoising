@@ -1530,7 +1530,7 @@ class EnsembleAdvMCDInterface(BaseInterface):
         assert 'l_test' in loss_funcs
         assert disentanglement_option in ['m11r11', 'm10r01', 'm11r01', 'm10r11']
         
-        super(EnsembleKPCNInterface, self).__init__(models, optims, loss_funcs, args, visual, use_llpm_buf, manif_learn, w_manif)
+        super(EnsembleAdvMCDInterface, self).__init__(models, optims, loss_funcs, args, visual, use_llpm_buf, manif_learn, w_manif)
         self.train_branches = train_branches
         self.disentanglement_option = disentanglement_option
         self.fix = args.fix
@@ -1679,20 +1679,20 @@ class EnsembleAdvMCDInterface(BaseInterface):
         l_diff_total += l_diff_recon
         l_spec_total += l_spec_recon
 
-        # fake discriminator loss
-        pred_fake = self._discriminator_forward((final_diffuse, final_specular))
-        l_diff_gan = self.loss_funcs['l_gan'](pred_fake['diffuse'], True)
-        l_spec_gan = self.loss_funcs['l_gan'](pred_fake['specular'], True)
-        loss_dict['l_G_diffuse_gan_fake'], loss_dict['l_G_specular_gan_fake'] = l_diff_gan.detach(), l_spec_gan.detach()
-        l_diff_total += l_diff_gan * self.gan_weight
-        l_spec_total += l_spec_gan * self.gan_weight
+        # # fake discriminator loss
+        # pred_fake = self._discriminator_forward((final_diffuse, final_specular))
+        # l_diff_gan = self.loss_funcs['l_gan'](pred_fake['diffuse'], True)
+        # l_spec_gan = self.loss_funcs['l_gan'](pred_fake['specular'], True)
+        # loss_dict['l_G_diffuse_gan_fake'], loss_dict['l_G_specular_gan_fake'] = l_diff_gan.detach(), l_spec_gan.detach()
+        # l_diff_total += l_diff_gan * self.gan_weight
+        # l_spec_total += l_spec_gan * self.gan_weight
 
         # path manifold loss
-        p_buffer_diffuse = crop_like(p_buffers['diffuse'], out_fake['diffuse'])
+        p_buffer_diffuse = crop_like(p_buffers['diffuse'], out['diffuse'])
         L_manif_diffuse = self.loss_funcs['l_manif'](p_buffer_diffuse, gt_diff)
         l_diff_total += L_manif_diffuse * self.w_manif
 
-        p_buffer_specular = crop_like(p_buffers['specular'], out_fake['specular'])
+        p_buffer_specular = crop_like(p_buffers['specular'], out['specular'])
         L_manif_specular = self.loss_funcs['l_manif'](p_buffer_specular, gt_spec)
         l_spec_total += L_manif_specular * self.w_manif
 
@@ -1714,48 +1714,48 @@ class EnsembleAdvMCDInterface(BaseInterface):
         self.optims['optim_interpolate_specular'].step()
 
         # optimize discriminators
-        self.models['discriminator_diffuse'].zero_grad()
-        self.models['discriminator_specular'].zero_grad()
-        l_diff_total, l_spec_total = 0.0, 0.0
-        real_data = dict(diffuse=gt_diff, specular=gt_spec)
-        pred_real = self._discriminator_forward(real_data)
-        l_diff_gan_real = self.loss_funcs['l_gan'](pred_real['diffuse'], True)
-        l_spec_gan_real = self.loss_funcs['l_gan'](pred_real['specular'], True)
-        fake_data = dict(diffuse=final_diffuse.detach(), specular=final_specular.detach())
-        pred_fake = self._discriminator_forward(fake_data)
-        l_diff_gan_fake = self.loss_funcs['l_gan'](pred_fake['diffuse'], False)
-        l_spec_gan_fake = self.loss_funcs['l_gan'](pred_fake['specular'], False)
-        loss_dict['l_D_diffuse_gan_real'] = l_diff_gan_real.detach()
-        loss_dict['l_D_specular_gan_real'] = l_spec_gan_real.detach()
-        loss_dict['l_D_diffuse_gan_fake'] = l_diff_gan_fake.detach()
-        loss_dict['l_D_specular_gan_fake'] = l_spec_gan_fake.detach()
-        l_diff_total += (l_diff_gan_fake + l_diff_gan_real) / 2.0
-        l_spec_total += (l_spec_gan_fake + l_spec_gan_real) / 2.0
+        # self.models['discriminator_diffuse'].zero_grad()
+        # self.models['discriminator_specular'].zero_grad()
+        # l_diff_total, l_spec_total = 0.0, 0.0
+        # real_data = dict(diffuse=gt_diff, specular=gt_spec)
+        # pred_real = self._discriminator_forward(real_data)
+        # l_diff_gan_real = self.loss_funcs['l_gan'](pred_real['diffuse'], True)
+        # l_spec_gan_real = self.loss_funcs['l_gan'](pred_real['specular'], True)
+        # fake_data = dict(diffuse=final_diffuse.detach(), specular=final_specular.detach())
+        # pred_fake = self._discriminator_forward(fake_data)
+        # l_diff_gan_fake = self.loss_funcs['l_gan'](pred_fake['diffuse'], False)
+        # l_spec_gan_fake = self.loss_funcs['l_gan'](pred_fake['specular'], False)
+        # loss_dict['l_D_diffuse_gan_real'] = l_diff_gan_real.detach()
+        # loss_dict['l_D_specular_gan_real'] = l_spec_gan_real.detach()
+        # loss_dict['l_D_diffuse_gan_fake'] = l_diff_gan_fake.detach()
+        # loss_dict['l_D_specular_gan_fake'] = l_spec_gan_fake.detach()
+        # l_diff_total += (l_diff_gan_fake + l_diff_gan_real) / 2.0
+        # l_spec_total += (l_spec_gan_fake + l_spec_gan_real) / 2.0
 
-        B = final_diffuse.shape[0]
-        if self.random_pt.shape[0] != B:
-            self.random_pt.resize_(B, 1, 1, 1)
-        self.random_pt.uniform_()
-        interp_diff = self.random_pt * fake_data['diffuse'] + (1 - self.random_pt) * gt_diff
-        interp_diff.requires_grad = True
-        self.random_pt.uniform_()
-        interp_spec = self.random_pt * fake_data['specular'] + (1 - self.random_pt) * gt_spec
-        interp_spec.requires_grad = True
-        interp_in = dict(diffuse=interp_diff, specular=interp_spec)
-        interp_crit = self._discriminator_forward(interp_in)
-        l_diff_gan_gp = self.loss_funcs['l_gp'](interp_diff, interp_crit['diffuse'])
-        l_spec_gan_gp = self.loss_funcs['l_gp'](interp_spec, interp_crit['specular'])
-        loss_dict['l_D_diffuse_gan_gp'] = l_diff_gan_gp.detach()
-        loss_dict['l_D_specular_gan_gp'] = l_spec_gan_gp.detach()
-        l_diff_total += l_diff_gan_gp * self.gp_weight
-        l_spec_total += l_spec_gan_gp * self.gp_weight
+        # B = final_diffuse.shape[0]
+        # if self.random_pt.shape[0] != B:
+        #     self.random_pt.resize_(B, 1, 1, 1)
+        # self.random_pt.uniform_()
+        # interp_diff = self.random_pt * fake_data['diffuse'] + (1 - self.random_pt) * gt_diff
+        # interp_diff.requires_grad = True
+        # self.random_pt.uniform_()
+        # interp_spec = self.random_pt * fake_data['specular'] + (1 - self.random_pt) * gt_spec
+        # interp_spec.requires_grad = True
+        # interp_in = dict(diffuse=interp_diff, specular=interp_spec)
+        # interp_crit = self._discriminator_forward(interp_in)
+        # l_diff_gan_gp = self.loss_funcs['l_gp'](interp_diff, interp_crit['diffuse'])
+        # l_spec_gan_gp = self.loss_funcs['l_gp'](interp_spec, interp_crit['specular'])
+        # loss_dict['l_D_diffuse_gan_gp'] = l_diff_gan_gp.detach()
+        # loss_dict['l_D_specular_gan_gp'] = l_spec_gan_gp.detach()
+        # l_diff_total += l_diff_gan_gp * self.gp_weight
+        # l_spec_total += l_spec_gan_gp * self.gp_weight
 
-        loss_dict['l_D_diffuse_total'] = l_diff_total.detach()
-        loss_dict['l_D_specular_total'] = l_spec_total.detach()
-        l_diff_total.backward()
-        l_spec_total.backward()
-        self.optims['optim_discriminator_diffuse'].step()
-        self.optims['optim_discriminator_specular'].step()
+        # loss_dict['l_D_diffuse_total'] = l_diff_total.detach()
+        # loss_dict['l_D_specular_total'] = l_spec_total.detach()
+        # l_diff_total.backward()
+        # l_spec_total.backward()
+        # self.optims['optim_discriminator_diffuse'].step()
+        # self.optims['optim_discriminator_specular'].step()
 
         with torch.no_grad():
             L_total = self.loss_funcs['l_recon'](final_radiance, gt_total)

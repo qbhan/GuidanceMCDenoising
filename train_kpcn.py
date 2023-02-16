@@ -256,7 +256,7 @@ def init_model(dataset, args):
         else:
             n_in = dataset['train'].dncnn_in_size
             
-            models['dncnn'] = KPCN(n_in, width=50)
+            models['dncnn'] = KPCN(n_in, width=width)
             print('Initialize KPCN for vanilla buffers (# of input channels: %d).'%(n_in))
         
         # Load pretrained weights
@@ -367,7 +367,7 @@ def init_model(dataset, args):
 
 def main(args):
     # Set random seeds
-    random.seed("Inyoung Cho, Yuchi Huo, Sungeui Yoon @ KAIST")
+    random.seed("Kyubeom, Sungeui Yoon @ KAIST")
     np.random.seed(0)
     torch.manual_seed(0)
     torch.backends.cudnn.benchmark = True  #torch.backends.cudnn.deterministic = True
@@ -391,7 +391,7 @@ if __name__ == "__main__":
                         help='learning rate of PathNet.')
     parser.add_argument('--lr_ckpt', action='store_true',
                         help='')
-    parser.add_argument('--best_err', type=float, required=False)
+    parser.add_argument('--best_err', type=float, default = 100.0)
     parser.add_argument('--pnet_out_size', type=int, nargs='+', default=[3], 
                         help='# of channels of outputs of PathNet.')
     parser.add_argument('--manif_loss', type=str, required=False,
