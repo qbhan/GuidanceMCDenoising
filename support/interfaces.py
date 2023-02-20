@@ -1629,16 +1629,21 @@ class EnsembleAdvMCDInterface(BaseInterface):
         self.models['interpolate_specular'].zero_grad()
         if self.feature:
             # print('use_feature')
+            # print(out['diffuse_G'].shape, out['diffuse_P'].shape, batch['kpcn_diffuse_in'][:, 10:].shape, batch['pbuffers_diffuse'].mean(1).shape)
             batch_interp = {
                 'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
                                     out['diffuse_P'].clone().detach(),
-                                    crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse_G']),
-                                    crop_like(batch['pbuffers_diffuse'].mean(1), out['diffuse_P']),
+                                    crop_like(batch['kpcn_diffuse_in'][:, 10:13], out['diffuse_G']),
+                                    crop_like(batch['kpcn_diffuse_in'][:, 20:21], out['diffuse_G']),
+                                    crop_like(batch['kpcn_diffuse_in'][:, 24:27], out['diffuse_G']),
+                                    crop_like(batch['pbuffers_diffuse'], out['diffuse_P']),
                                     ], dim=1),
                 'specular': torch.cat([out['specular_G'].clone().detach(), 
                                     out['specular_P'].clone().detach(),
-                                    crop_like(batch['kpcn_specular_in'][:, 10:], out['specular_G']),
-                                    crop_like(batch['pbuffers_specular'].mean(1), out['specular_P']),
+                                    crop_like(batch['kpcn_specular_in'][:, 10:13], out['specular_G']),
+                                    crop_like(batch['kpcn_specular_in'][:, 20:21], out['specular_G']),
+                                    crop_like(batch['kpcn_specular_in'][:, 24:27], out['specular_G']),
+                                    crop_like(batch['pbuffers_specular'], out['specular_P']),
                                     ], dim=1)
             }
         else:
@@ -1688,11 +1693,11 @@ class EnsembleAdvMCDInterface(BaseInterface):
         # l_spec_total += l_spec_gan * self.gan_weight
 
         # path manifold loss
-        p_buffer_diffuse = crop_like(p_buffers['diffuse'], out['diffuse'])
+        p_buffer_diffuse = crop_like(p_buffers['diffuse'], out['diffuse_G'])
         L_manif_diffuse = self.loss_funcs['l_manif'](p_buffer_diffuse, gt_diff)
         l_diff_total += L_manif_diffuse * self.w_manif
 
-        p_buffer_specular = crop_like(p_buffers['specular'], out['specular'])
+        p_buffer_specular = crop_like(p_buffers['specular'], out['specular_G'])
         L_manif_specular = self.loss_funcs['l_manif'](p_buffer_specular, gt_spec)
         l_spec_total += L_manif_specular * self.w_manif
 
@@ -1898,13 +1903,17 @@ class EnsembleAdvMCDInterface(BaseInterface):
             batch_interp = {
                 'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
                                     out['diffuse_P'].clone().detach(),
-                                    crop_like(batch['kpcn_diffuse_in'][:, 10:], out['diffuse_G']),
-                                    crop_like(batch['pbuffers_diffuse'].mean(1), out['diffuse_P']),
+                                    crop_like(batch['kpcn_diffuse_in'][:, 10:13], out['diffuse_G']),
+                                    crop_like(batch['kpcn_diffuse_in'][:, 20:21], out['diffuse_G']),
+                                    crop_like(batch['kpcn_diffuse_in'][:, 24:27], out['diffuse_G']),
+                                    crop_like(batch['pbuffers_diffuse'], out['diffuse_P']),
                                     ], dim=1),
                 'specular': torch.cat([out['specular_G'].clone().detach(), 
                                     out['specular_P'].clone().detach(),
-                                    crop_like(batch['kpcn_specular_in'][:, 10:], out['specular_G']),
-                                    crop_like(batch['pbuffers_specular'].mean(1), out['specular_P']),
+                                    crop_like(batch['kpcn_specular_in'][:, 10:13], out['specular_G']),
+                                    crop_like(batch['kpcn_specular_in'][:, 20:21], out['specular_G']),
+                                    crop_like(batch['kpcn_specular_in'][:, 24:27], out['specular_G']),
+                                    crop_like(batch['pbuffers_specular'], out['specular_P']),
                                     ], dim=1)
             }
         else:

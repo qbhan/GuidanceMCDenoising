@@ -231,9 +231,9 @@ def init_data(args):
     datasets = {}
     if 'full' in args.desc:
         print('load full dataset')
-        datasets['train'] = MSDenoiseDataset(args.data_dir, 2, 'kpcn', 'train', args.batch_size, 'random',
+        datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
             use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
-        datasets['val'] = MSDenoiseDataset(args.data_dir, 2, 'kpcn', 'val', BS_VAL, 'grid',
+        datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
             use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
     else:
         print('load 8spp dataset')
