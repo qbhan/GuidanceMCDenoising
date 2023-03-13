@@ -1,4 +1,4 @@
-# Pixel-wise Guidance for Utilizing Auxiliary Features for Monte Carlo Denoising
+# Pixel-wise Guidance for Utilizing Auxiliary Features in Monte Carlo Denoising
 ## I3D2023, PACMCGIT
 ### [Project Page] | [Paper] | [Interactive Viewer]
 <br>Official PyTorch implementation.</br>
