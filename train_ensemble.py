@@ -231,9 +231,9 @@ def init_data(args):
     datasets = {}
     if 'full' in args.desc:
         print('load full dataset')
-        datasets['train'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'train', args.batch_size, 'random',
+        datasets['train'] = MSDenoiseDataset(args.data_dir, 2, 'kpcn', 'train', args.batch_size, 'random',
             use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
-        datasets['val'] = MSDenoiseDataset(args.data_dir, 8, 'kpcn', 'val', BS_VAL, 'grid',
+        datasets['val'] = MSDenoiseDataset(args.data_dir, 2, 'kpcn', 'val', BS_VAL, 'grid',
             use_g_buf=True, use_sbmc_buf=False, use_llpm_buf=args.use_llpm_buf, pnet_out_size=3)
     else:
         print('load 8spp dataset')
@@ -310,8 +310,6 @@ def init_model(dataset, args, rank=0):
                 feat_ch = pnet_out_size + 1
                 models['generator_diffuse_P'] = Generator(feat_ch=feat_ch)
                 models['generator_specular_P'] = Generator(feat_ch=feat_ch)
-                # models['discriminator_diffuse'] = Discriminator()
-                # models['discriminator_specular'] = Discriminator()
 
             if args.feature:
                 if 'KPCN' in args.model_name:
@@ -320,8 +318,14 @@ def init_model(dataset, args, rank=0):
                     n_in = 7 + pnet_out_size + 1 + 6
             else:
                 n_in = 6
-            models['interpolate_diffuse'] = InterpolationNet(n_in, model_type=args.model_type)
-            models['interpolate_specular'] = InterpolationNet(n_in, model_type=args.model_type)
+            if 'half' in args.model_name:
+                width = 25
+                print('Use half of original capaticity of interpolationNet, width :', width)
+            else:
+                width = 50
+                print('Use all of original capaticity of interpolationNet, width :', width)
+            models['interpolate_diffuse'] = InterpolationNet(n_in, width=width)
+            models['interpolate_specular'] = InterpolationNet(n_in, width=width)
             
         else:
             assert('should use llpm')
@@ -353,7 +357,7 @@ def init_model(dataset, args, rank=0):
                         ck_m = torch.load(MODEL_FN[model_name], map_location='cuda:{}'.format(args.device_id))
                         # ck_m = torch.load(PRE_MODEL_FN_2[model_name], map_location='cuda:{}'.format(args.device_id))
                         if 'dncnn' in model_name: pre_model_name = 'dncnn'
-                        if 'generator' in model_name: pre_model_name = model_name[:-2]
+                        elif 'generator' in model_name: pre_model_name = model_name[:-2]
                         else: pre_model_name = model_name
                         try:
                             models[model_name].load_state_dict(ck_m['state_dict_' + pre_model_name])
@@ -391,7 +395,7 @@ def init_model(dataset, args, rank=0):
                 # models[model_name] = models[model_name].cuda(args.device_id)
                 models[model_name] = models[model_name].cuda()
         else:
-            # multi_gpu support with DDP
+            # multi_gpu support with DDP (TODO)
             print('Data Parallel')
             if args.distributed:
                 if args.world_size == 1:
@@ -453,7 +457,7 @@ def init_model(dataset, args, rank=0):
                     ck_m = torch.load(MODEL_FN[model_name], map_location='cuda:{}'.format(args.device_id))
                     # ck_m = torch.load(PRE_MODEL_FN_2[model_name], map_location='cuda:{}'.format(args.device_id))
                     if 'dncnn' in model_name: pre_model_name = 'dncnn'
-                    if 'generator' in model_name: pre_model_name = model_name[:-2]
+                    elif 'generator' in model_name: pre_model_name = model_name[:-2]
                     else: pre_model_name = model_name
                     if 'optims' in ck_m:
                         state = ck_m['optims']['optim_' + pre_model_name].state_dict()

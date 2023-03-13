@@ -71,6 +71,14 @@ def init_model(dataset, args, rank=0):
     for lr_pnet, pnet_out_size, w_manif in list(itertools.product(*tmp)):
         # Initialize models (NOTE: modified for each model) 
         models = {}
+        if 'half' in args.model_name:
+            cond_ch = 64
+            n_resblock = 8
+            print('half network')
+        else:
+            cond_ch = 128
+            n_resblock = 16
+            print('half network')
         if args.use_llpm_buf:
             NotImplementedError('AdvMCD with PathNet not yet done')
             if args.disentangle in ['m10r01', 'm11r01']:
@@ -86,14 +94,14 @@ def init_model(dataset, args, rank=0):
                 p_in = 46
             if not args.no_gbuf: feat_ch = 7 + pnet_out_size + 1
             else: feat_ch = pnet_out_size + 1
-            models['generator_diffuse'] = Generator(feat_ch=feat_ch)
-            models['generator_specular'] = Generator(feat_ch=feat_ch)
+            models['generator_diffuse'] = Generator(feat_ch=feat_ch, cond_ch=cond_ch, n_resblock=n_resblock)
+            models['generator_specular'] = Generator(feat_ch=feat_ch, cond_ch=cond_ch, n_resblock=n_resblock)
             models['discriminator_diffuse'] = Discriminator()
             models['discriminator_specular'] = Discriminator()
             print('Initialize AdvMCD for path descriptors (# of input channels: %d).'%(n_in))
         else:
-            models['generator_diffuse'] = Generator()
-            models['generator_specular'] = Generator()
+            models['generator_diffuse'] = Generator(cond_ch=cond_ch, n_resblock=n_resblock)
+            models['generator_specular'] = Generator(cond_ch=cond_ch, n_resblock=n_resblock)
             models['discriminator_diffuse'] = Discriminator()
             models['discriminator_specular'] = Discriminator()
             print('Initialize AdvMCD for vanilla buffers')
@@ -128,7 +136,7 @@ def init_model(dataset, args, rank=0):
                 # models[model_name] = models[model_name].cuda(args.device_id)
                 models[model_name] = models[model_name].cuda()
         else:
-            # multi_gpu support with DDP
+            # multi_gpu support with DDP (TODO)
             print('Data Parallel')
             if args.distributed:
                 if args.world_size == 1:
@@ -208,9 +216,8 @@ def init_model(dataset, args, rank=0):
             loss_funcs[loss_name].cuda()
 
         for model_name in models:
-            # params['sched_' + model_name] = optim.lr_scheduler.MultiStepLR(optims['optim_' + model_name], milestones=[50000, 100000, 150000, 200000])
             if 'backbone' in model_name: continue
-            optims['sched_' + model_name] = optim.lr_scheduler.StepLR(optims['optim_' + model_name], step_size=1, gamma=0.5)
+            optims['sched_' + model_name] = optim.lr_scheduler.StepLR(optims['optim_' + model_name], step_size=args.decay_step, gamma=0.5)
         # params['sched'] = optim.lr_scheduler.MultiStepLR(optims['optim_dncnn'], step_size=3, gamma=0.5, last_epoch=args.start_epoch-1)
             if is_pretrained:
                 optims['sched_' + model_name].load_state_dict(ck['optims']['sched_' + model_name].state_dict())
@@ -289,6 +296,7 @@ if __name__ == "__main__":
 
     # new arguments
     parser.add_argument('--no_gbuf', action='store_true')
+    parser.add_argument('--decay_step', type=int, default=1)
     
     
     args = parser.parse_args()
