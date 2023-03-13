@@ -1287,6 +1287,8 @@ class FullImageDataset(Dataset):
             self.has_hit = np.concatenate((self.has_hit,)*3, axis=2)
             if not self.use_single:
                 self.full_ipt = sample['kpcn_diffuse_buffer'] * sample['kpcn_albedo'] + np.exp(sample['kpcn_specular_buffer']) - 1
+                self.full_ipt_diff = sample['kpcn_diffuse_buffer']
+                self.full_ipt_spec = sample['kpcn_specular_buffer']
             else:
                 self.full_ipt = sample['kpcn_buffer']
             self.full_tgt = sample['target_total']

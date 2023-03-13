@@ -1017,11 +1017,9 @@ class EnsembleKPCNInterface(BaseInterface):
         self.disentanglement_option = disentanglement_option
         self.fix = args.fix
         self.feature = args.feature
-        self.model_type = args.model_type
         self.best_err = 1e10
         self.epoch = 0
         self.cnt = 0    
-        self.weight = args.weight
         
     def __str__(self):
         return 'EnsembleKPCN'
@@ -1114,7 +1112,6 @@ class EnsembleKPCNInterface(BaseInterface):
         else:
             assert('should use llpm')
 
-                # del p_buffer
 
         # pass denoiser
         if not self.fix:
@@ -1124,15 +1121,12 @@ class EnsembleKPCNInterface(BaseInterface):
         else:
             with torch.no_grad():
                 out = self._regress_forward(batch_G, batch_P)
-
-        # print('grad dncnn', out['radiance_G'].requires_grad)
         
 
         # make new batch for error estimation
         self.models['interpolate_diffuse'].zero_grad()
         self.models['interpolate_specular'].zero_grad()
         if self.feature:
-            # print('use_feature')
             batch_interp = {
                 'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
                                     out['diffuse_P'].clone().detach(),
@@ -1146,7 +1140,6 @@ class EnsembleKPCNInterface(BaseInterface):
                                     ], dim=1)
             }
         else:
-            # print('no_feature')
             batch_interp = {
                 'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
                                     out['diffuse_P'].clone().detach(),
@@ -1160,7 +1153,6 @@ class EnsembleKPCNInterface(BaseInterface):
 
         # apply interpolation
         if interpolation_W['diffuse'].shape[1] > 1:
-            # print(interpolation_W['diffuse'][:, :1])
             final_diffuse = out['diffuse_G'] * interpolation_W['diffuse'][:, :1] + out['diffuse_P'] * interpolation_W['diffuse'][:, 1:]
             final_specular = out['specular_G'] * interpolation_W['specular'][:, :1] + out['specular_P'] * interpolation_W['specular'][:, 1:]
         else:
@@ -1176,7 +1168,6 @@ class EnsembleKPCNInterface(BaseInterface):
             return
 
         self._logging(loss_dict)
-        # del loss_dict
         self._optimization()
 
     def _manifold_forward(self, batch):
@@ -1392,7 +1383,6 @@ class EnsembleKPCNInterface(BaseInterface):
         # make new batch for interpolation
         if self.train_branches:
             if self.feature:
-                # print('use_feature')
                 batch_interp = {
                     'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
                                         out['diffuse_P'].clone().detach(),
@@ -1406,7 +1396,6 @@ class EnsembleKPCNInterface(BaseInterface):
                                         ], dim=1)
                 }
             else:
-                # print('no_feature')
                 batch_interp = {
                     'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
                                         out['diffuse_P'].clone().detach(),
@@ -1417,7 +1406,6 @@ class EnsembleKPCNInterface(BaseInterface):
                 }
         else:
             if self.feature:
-                # print('use_feature')
                 batch_interp = {
                     'radiance': torch.cat([out['radiance_G'].clone().detach(), 
                                         out['radiance_P'].clone().detach(),
@@ -1426,7 +1414,6 @@ class EnsembleKPCNInterface(BaseInterface):
                                         ], dim=1),
                 }
             else:
-                # print('no_feature')
                 batch_interp = {
                     'radiance': torch.cat([out['radiance_G'].clone().detach(),
                                         out['radiance_P'].clone().detach(),
@@ -1628,8 +1615,6 @@ class EnsembleAdvMCDInterface(BaseInterface):
         self.models['interpolate_diffuse'].zero_grad()
         self.models['interpolate_specular'].zero_grad()
         if self.feature:
-            # print('use_feature')
-            # print(out['diffuse_G'].shape, out['diffuse_P'].shape, batch['kpcn_diffuse_in'][:, 10:].shape, batch['pbuffers_diffuse'].mean(1).shape)
             batch_interp = {
                 'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
                                     out['diffuse_P'].clone().detach(),
@@ -1647,7 +1632,6 @@ class EnsembleAdvMCDInterface(BaseInterface):
                                     ], dim=1)
             }
         else:
-            # print('no_feature')
             batch_interp = {
                 'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
                                     out['diffuse_P'].clone().detach(),
@@ -1661,7 +1645,6 @@ class EnsembleAdvMCDInterface(BaseInterface):
 
         # apply interpolation
         if interpolation_W['diffuse'].shape[1] > 1:
-            # print(interpolation_W['diffuse'][:, :1])
             final_diffuse = out['diffuse_G'] * interpolation_W['diffuse'][:, :1] + out['diffuse_P'] * interpolation_W['diffuse'][:, 1:]
             final_specular = out['specular_G'] * interpolation_W['specular'][:, :1] + out['specular_P'] * interpolation_W['specular'][:, 1:]
         else:
@@ -1683,14 +1666,6 @@ class EnsembleAdvMCDInterface(BaseInterface):
         loss_dict['l_G_diffuse_recon'], loss_dict['l_G_specular_recon'] = l_diff_recon.detach(), l_spec_recon.detach()
         l_diff_total += l_diff_recon
         l_spec_total += l_spec_recon
-
-        # # fake discriminator loss
-        # pred_fake = self._discriminator_forward((final_diffuse, final_specular))
-        # l_diff_gan = self.loss_funcs['l_gan'](pred_fake['diffuse'], True)
-        # l_spec_gan = self.loss_funcs['l_gan'](pred_fake['specular'], True)
-        # loss_dict['l_G_diffuse_gan_fake'], loss_dict['l_G_specular_gan_fake'] = l_diff_gan.detach(), l_spec_gan.detach()
-        # l_diff_total += l_diff_gan * self.gan_weight
-        # l_spec_total += l_spec_gan * self.gan_weight
 
         # path manifold loss
         p_buffer_diffuse = crop_like(p_buffers['diffuse'], out['diffuse_G'])
@@ -1717,50 +1692,6 @@ class EnsembleAdvMCDInterface(BaseInterface):
         self.optims['optim_backbone_specular'].step()
         self.optims['optim_interpolate_diffuse'].step()
         self.optims['optim_interpolate_specular'].step()
-
-        # optimize discriminators
-        # self.models['discriminator_diffuse'].zero_grad()
-        # self.models['discriminator_specular'].zero_grad()
-        # l_diff_total, l_spec_total = 0.0, 0.0
-        # real_data = dict(diffuse=gt_diff, specular=gt_spec)
-        # pred_real = self._discriminator_forward(real_data)
-        # l_diff_gan_real = self.loss_funcs['l_gan'](pred_real['diffuse'], True)
-        # l_spec_gan_real = self.loss_funcs['l_gan'](pred_real['specular'], True)
-        # fake_data = dict(diffuse=final_diffuse.detach(), specular=final_specular.detach())
-        # pred_fake = self._discriminator_forward(fake_data)
-        # l_diff_gan_fake = self.loss_funcs['l_gan'](pred_fake['diffuse'], False)
-        # l_spec_gan_fake = self.loss_funcs['l_gan'](pred_fake['specular'], False)
-        # loss_dict['l_D_diffuse_gan_real'] = l_diff_gan_real.detach()
-        # loss_dict['l_D_specular_gan_real'] = l_spec_gan_real.detach()
-        # loss_dict['l_D_diffuse_gan_fake'] = l_diff_gan_fake.detach()
-        # loss_dict['l_D_specular_gan_fake'] = l_spec_gan_fake.detach()
-        # l_diff_total += (l_diff_gan_fake + l_diff_gan_real) / 2.0
-        # l_spec_total += (l_spec_gan_fake + l_spec_gan_real) / 2.0
-
-        # B = final_diffuse.shape[0]
-        # if self.random_pt.shape[0] != B:
-        #     self.random_pt.resize_(B, 1, 1, 1)
-        # self.random_pt.uniform_()
-        # interp_diff = self.random_pt * fake_data['diffuse'] + (1 - self.random_pt) * gt_diff
-        # interp_diff.requires_grad = True
-        # self.random_pt.uniform_()
-        # interp_spec = self.random_pt * fake_data['specular'] + (1 - self.random_pt) * gt_spec
-        # interp_spec.requires_grad = True
-        # interp_in = dict(diffuse=interp_diff, specular=interp_spec)
-        # interp_crit = self._discriminator_forward(interp_in)
-        # l_diff_gan_gp = self.loss_funcs['l_gp'](interp_diff, interp_crit['diffuse'])
-        # l_spec_gan_gp = self.loss_funcs['l_gp'](interp_spec, interp_crit['specular'])
-        # loss_dict['l_D_diffuse_gan_gp'] = l_diff_gan_gp.detach()
-        # loss_dict['l_D_specular_gan_gp'] = l_spec_gan_gp.detach()
-        # l_diff_total += l_diff_gan_gp * self.gp_weight
-        # l_spec_total += l_spec_gan_gp * self.gp_weight
-
-        # loss_dict['l_D_diffuse_total'] = l_diff_total.detach()
-        # loss_dict['l_D_specular_total'] = l_spec_total.detach()
-        # l_diff_total.backward()
-        # l_spec_total.backward()
-        # self.optims['optim_discriminator_diffuse'].step()
-        # self.optims['optim_discriminator_specular'].step()
 
         with torch.no_grad():
             L_total = self.loss_funcs['l_recon'](final_radiance, gt_total)
@@ -1899,7 +1830,6 @@ class EnsembleAdvMCDInterface(BaseInterface):
 
         # make new batch for interpolation
         if self.feature:
-            # print('use_feature')
             batch_interp = {
                 'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
                                     out['diffuse_P'].clone().detach(),
@@ -1917,7 +1847,6 @@ class EnsembleAdvMCDInterface(BaseInterface):
                                     ], dim=1)
             }
         else:
-            # print('no_feature')
             batch_interp = {
                 'diffuse': torch.cat([out['diffuse_G'].clone().detach(), 
                                     out['diffuse_P'].clone().detach(),
