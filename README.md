@@ -1,6 +1,6 @@
 # Pixel-wise Guidance for Utilizing Auxiliary Features for Monte Carlo Denoising
 ## I3D2023, PACMCGIT
-### [Project Page] | [Paper]
+### [Project Page] | [Paper] | [Interactive Viewer]
 <br>Official PyTorch implementation.</br>
  [Kyu-Beom Han](https://qbhan.oopy.io/)<sup>1</sup>,
  Olivia G. Odenthal<sup>2</sup>,
@@ -67,6 +67,11 @@ Our code is tested on Ubuntu 18.04 with an Intel i9-10940X CPU with NVIDIA Gefor
      	- utils.py
    	- scripts/             # Scripts to train models
    	- torch_utils          # Cuda implementation of per-pixel kernel for PyTorch [Munkberg and Hasselgren 2020]
+
+
+## Dataset
+Our dataset is about 2TB large. If you are interested in our work and happy to play with our dataset, please leave an git issue requesting the dataset.
+We will provide a link you can download the whole dataset.
 
 
 ### Reference
