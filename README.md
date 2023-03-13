@@ -10,9 +10,9 @@ University of Stuttgart, Germany<sup>2</sup>
 
 ![teaser_image](assets/results.PNG)
 
-<!-- ### Scene credits
-- ["Library-Home Office"](https://www.blendswap.com/blend/19984) by [ThePefDispenser](https://blendswap.com/profile/663773) under CC BY 3.0.
-- ["My Kitchen"](https://www.blendswap.com/blend/9528) by [tokabilitor](https://www.blendswap.com/profile/41638) under CC0. -->
+### Scene credits
+- ["My Kitchen"](https://www.blendswap.com/blend/9528) by [tokabilitor](https://www.blendswap.com/profile/41638) under CC-0.
+- ["Bath"](https://www.blendswap.com/blend/18595) by [Ndakasha](https://www.blendswap.com/profile/404844) under CC-0.
 
 ## Paper Summary
 
@@ -42,17 +42,19 @@ Our code is tested on Ubuntu 18.04 with an Intel i9-10940X CPU with NVIDIA Gefor
     - Image-space MC Denoising 
       - Kernel-predicting convolutional network (KPCN) [Bako et al. 2017]
       - Adversarial Monte Carlo Denoising (AdvMCD) [Xu et al. 2019]
-    - Sample-space MC Denoising
+    - Sample-space MC Denoising (TODO)
         - Neural Denoising with Layer Embeddings (NDLE) [Munkberg and Hasselgren 2020]
+        - Sample-based Monte Carlo Denoising (SBMC) [Gharbi et al. 2019]
 
 2. Repository Overview
    - train_kpcn.py         # Train KPCN with G- \& P- buffers
    - train_adv.py          # Train AdvMCD with G- \& P- buffers
    - train_lbmc.py         # Train NDLE with G- \& P- buffers
+   - train_sbmc.py         # Train SBMC with G- \& P- buffers
    - train_ensemble.py     # Train Our Guidance Denoising Framework
    - test_models.py        # Test any model
      - support/            # Codes for baselines \& utilities
-       - WCMC/             # Codes for reproducing KPCN & WCMC  
+       - WCMC/             # Codes for reproducing KPCN & SBMC & WCMC 
        - AdvMCD/           # Codes for reproducing AdvMCD
        - NDLE/             # Codes for reproducing NDLE
      	- datasets.py      
@@ -64,3 +66,10 @@ Our code is tested on Ubuntu 18.04 with an Intel i9-10940X CPU with NVIDIA Gefor
      	- utils.py
    	- scripts/             # Scripts to train models
    	- torch_utils          # Cuda implementation of per-pixel kernel for PyTorch [Munkberg and Hasselgren 2020]
+
+
+### Reference
+- Bako, Steve, et al. "Kernel-predicting convolutional networks for denoising Monte Carlo renderings." ACM Trans. Graph. 36.4 (2017): 97-1.
+- Gharbi, Michaël, et al. "Sample-based Monte Carlo denoising using a kernel-splatting network." ACM Transactions on Graphics (TOG) 38.4 (2019): 1-12.
+- Munkberg, Jacob, and Jon Hasselgren. "Neural denoising with layer embeddings." Computer Graphics Forum. Vol. 39. No. 4. 2020.
+- Cho, In-Young, Yuchi Huo, and Sung-Eui Yoon. "Weakly-supervised contrastive learning in path manifold for Monte Carlo image reconstruction." ACM Trans. Graph. 40.4 (2021): 38-1.
