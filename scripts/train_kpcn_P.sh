@@ -3,8 +3,8 @@ python train_kpcn.py \
     --batch_size 8 \
     --val_epoch 1 \
     --data_dir /home/kyubeom/ssd1/KPCN \
-    --model_name KPCN_P_test \
-    --desc "KPCN_P_test" \
+    --model_name KPCN_P_half_full_2 \
+    --desc "KPCN_P_half_full_2" \
     --num_epoch 10 \
     --lr_dncnn 1e-4 \
     --manif_loss FMSE \
@@ -13,7 +13,8 @@ python train_kpcn.py \
     --use_llpm_buf \
     --manif_learn \
     --w_manif 0.1 \
-    --device_id 3 \
+    --device_id 2 \
     --save 'weights_full_4' \
     --summary 'summary_full_4' \
-    --no_gbuf
+    --no_gbuf \
+    --train_branches

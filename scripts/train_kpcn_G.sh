@@ -3,11 +3,12 @@ python train_kpcn.py \
     --batch_size 8 \
     --val_epoch 1 \
     --data_dir /home/kyubeom/ssd1/KPCN \
-    --model_name KPCN_G_test \
-    --desc "KPCN_G_test" \
+    --model_name KPCN_G_full_2 \
+    --desc "KPCN_G_full_2" \
+    --train_branches \
     --num_epoch 10 \
     --lr_dncnn 1e-4 \
-    --device_id 3 \
+    --device_id 0 \
     --save "weights_full_4"\
     --summary "summary_full_4" \
     --num_epoch 10

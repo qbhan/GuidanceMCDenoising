@@ -3,14 +3,21 @@ python train_adv.py \
     --batch_size 8 \
     --val_epoch 1 \
     --data_dir /home/kyubeom/ssd1/KPCN \
-    --model_name ADV_G \
-    --desc "ADV_G" \
+    --model_name ADV_P \
+    --desc "ADV_P" \
     --num_epoch 10 \
     --lr_G_diffuse 1e-4 \
     --lr_G_specular 1e-4 \
     --lr_D 1e-4 \
-    --device_id 2 \
+    --no_gbuf \
+    --use_llpm_buf \
+    --manif_learn \
+    --manif_loss FMSE \
+    --pnet_out_size 12 \
+    --lr_pnet 1e-4 \
+    --w_manif 0.1 \
+    --device_id 3 \
     --save "weights_adv"\
     --summary "summary_adv" \
     --num_epoch 15 \
-    --decay_step 2
+    --decay_step 1

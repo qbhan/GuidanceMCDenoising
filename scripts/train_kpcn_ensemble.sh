@@ -1,20 +1,22 @@
-python train_kpcn.py \
+python train_ensemble.py \
     --single_gpu \
     --batch_size 8 \
     --val_epoch 1 \
     --data_dir /home/kyubeom/ssd1/KPCN \
-    --model_name KPCN_GP_half_full \
-    --desc "KPCN_GP_half_full" \
+    --model_name KPCN_ensemble \
+    --desc "KPCN_ensemble" \
     --num_epoch 15 \
     --lr_dncnn 1e-6 \
+    --use_llpm_buf \
+    --lr_pnet 1e-5 \
+    --manif_learn \
     --manif_loss FMSE \
     --pnet_out_size 12 \
-    --lr_pnet 1e-6 \
-    --use_llpm_buf \
-    --manif_learn \
     --w_manif 0.1 \
-    --device_id 1 \
+    --lr_inet 1e-6 \
+    --device_id 0 \
     --save 'weights_full_4' \
     --summary 'summary_full_4' \
-    --train_branches \
-    --start_epoch 6
+    --interpolate \
+    --feature \
+    --load
