@@ -30,7 +30,7 @@ Our code is tested on Ubuntu 18.04 with an Intel i9-10940X CPU with NVIDIA Gefor
     conda install pytorch==1.12.0 torchvision==0.13.0 cudatoolit==11.3.1 -c pytorch
     conda install -c anaconda h5py
     conda install tensorboard tensorboardX lz4
-    pip install opencv-python, kornia, scipy, pandas, tqdm, matplotlib
+    pip install opencv-python kornia scipy pandas tqdm matplotlib visdom imageio scikit-image
     ```
 
 2. Go to torch_utils and follow the instructions to install per-pixel kernel function for PyTorch

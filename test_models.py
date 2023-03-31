@@ -16,11 +16,13 @@ import train_kpcn
 import train_lbmc
 import train_adv
 import train_ensemble
-import train_ensemble_lbmc
+# import train_ensemble_lbmc
 from support.utils import crop_like
 from support.img_utils import WriteImg
 from support.datasets import FullImageDataset
 from support.metrics import RelMSE, RelL1, SSIM, MSE, L1, _tonemap
+
+# import torch_tensorrt
 
 
 def tonemap(c, ref=None, kInvGamma=1.0/2.2):
@@ -41,7 +43,7 @@ def load_input(filename, spp, args):
         dataset = FullImageDataset(filename, spp, 'kpcn',
                                    args.use_g_buf, args.use_sbmc_buf, 
                                    args.use_llpm_buf, args.pnet_out_size[0], 
-                                   load_gbuf=args.load_gbuf, load_pbuf=args.load_pbuf, use_single=args.use_single)
+                                   load_gbuf=args.load_gbuf, load_pbuf=args.load_pbuf)
     elif 'BMC' in args.model_name:
         dataset = FullImageDataset(filename, spp, 'sbmc',
                                    args.use_g_buf, args.use_sbmc_buf, 
@@ -71,7 +73,7 @@ def inference(interface, dataloader, spp, args):
             'weight_diffuse_P': torch.zeros((1, H, W)).cuda(), 'weight_specular_P': torch.zeros((1, H, W)).cuda(),
         }
 
-    if args.kernel_visualize or args.vis_branch or args.vis_score: 
+    if args.vis_branch or args.vis_score: 
         mode='train'
     else: 
         mode='test'
@@ -113,7 +115,7 @@ def inference(interface, dataloader, spp, args):
             if 'ensemble' not in args.model_name:
                 out, p_buffers, rad_dict, kernel_dict, score_dict = interface.validate_batch(batch, mode=mode)
             else:
-                out, p_buffers, rad_dict, kernel_dict, score_dict, time = interface.validate_batch(batch, mode=mode)
+                out, p_buffers, rad_dict, kernel_dict, score_dict = interface.validate_batch(batch, mode=mode)
             ender.record()
             torch.cuda.synchronize()
             curr_time = starter.elapsed_time(ender)
@@ -134,9 +136,6 @@ def inference(interface, dataloader, spp, args):
                 if args.vis_branch:
                     for k in rad_dict:
                         rad_dict[k] = nn.functional.pad(rad_dict[k], (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
-                if args.kernel_visualize:
-                    for k in kernel_dict: 
-                        kernel_dict[k] = nn.functional.pad(kernel_dict[k], (pad_w//2, pad_w-pad_w//2, pad_h//2, pad_h-pad_h//2), 'replicate') # order matters
                 if args.vis_score:
                     for k in score_dict:
                         # print(score_dict[k].shape)
@@ -150,12 +149,8 @@ def inference(interface, dataloader, spp, args):
                     for k in rad_dict:
                         # print(k)
                         out_rad_dict[k][:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = rad_dict[k][b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
-                if args.kernel_visualize:                        
-                    for k in kernel_dict:
-                        out_kernel_dict[k][:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = kernel_dict[k][b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
                 if args.vis_score:
                     for k in score_dict:
-                        # print(k)
                         out_score_dict[k][:,i_start[b]:i_end[b],j_start[b]:j_end[b]] = score_dict[k][b,:,i_start[b]-i[b]:i_end[b]-i[b],j_start[b]-j[b]:j_end[b]-j[b]]
 
     denoise_time = sum(times)
@@ -169,9 +164,6 @@ def inference(interface, dataloader, spp, args):
             if 'specular' in k:
                 out_rad_dict[k] = torch.exp(out_rad_dict[k]) - 1.0
             out_rad_dict[k] = out_rad_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
-    if args.kernel_visualize:
-        for k in out_kernel_dict:
-            out_kernel_dict[k] = out_kernel_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
     if args.vis_score:
         for k in out_score_dict:
             out_score_dict[k] = out_score_dict[k].detach().cpu().numpy().transpose([1, 2, 0])
@@ -191,6 +183,7 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
 
     num_metrics = 1 + 6 * 4 + 1 # spp + (format, RelL2, RelL1, DSSIM, L1, MSE) * (linear, tmap w/o gamma, tmap gamma=2.2, tmap gamma=adaptive) + time
     results = [[0 for i in range(len(scenes)+1)] for j in range(num_metrics * (len(spps)))]
+    # print('size1', len(results), len(results[0]))
     results_input = [[0 for i in range(len(scenes)+1)] for j in range(num_metrics * len(spps))]
 
     # formatting
@@ -245,15 +238,11 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
             
             if i == 0 and j == 0:
                 datasets = {'train': dataset} # dirty code for now
-                if 'SBMC' in args.model_name:
-                    interfaces, _ = train_sbmc.init_model(datasets, args)
-                elif 'LBMC' in args.model_name:
+                if 'LBMC' in args.model_name:
                     interfaces, _ = train_lbmc.init_model(datasets, args)
-                elif 'ensemble' in args.model_name or 'ensemblwe' in args.model_name:
-                    if 'KPCN' in args.model_name:
+                elif 'ensemble' in args.model_name or 'Ensemble' in args.model_name:
+                    if 'KPCN' in args.model_name or 'ADV' in args.model_name:
                         interfaces, _ = train_ensemble.init_model(datasets, args)
-                    elif 'lbmc' in args.model_name:
-                        interfaces, _ = train_ensemble_lbmc.init_model(datasets, args)
                 elif 'KPCN' in args.model_name:
                     interfaces, _ = train_kpcn.init_model(datasets, args)
                 elif 'ADV' in args.model_name:
@@ -270,6 +259,8 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
             """
             tgt = dataset.full_tgt
             ipt = dataset.full_ipt
+            ipt_diff = dataset.full_ipt_diff
+            ipt_spec = dataset.full_ipt_spec
 
             tgt_diff = dataset.full_tgt_diff
             tgt_spec = dataset.full_tgt_spec
@@ -283,9 +274,6 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
             if out_rad_dict:
                 for k in out_rad_dict:
                     out_rad_dict[k] = out_rad_dict[k][crop:-crop, crop:-crop, ...]
-            if args.kernel_visualize:
-                for k in out_kernel_dict:
-                    out_kernel_dict[k] = out_kernel_dict[k][crop:-crop, crop:-crop, ...]
             if out_score_dict:
                 for k in out_score_dict:
                     out_score_dict[k] = out_score_dict[k][crop:-crop, crop:-crop, ...]
@@ -353,15 +341,20 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
                 t_out = tmaps[-1](out_rad)
                 t_err = np.mean(np.clip(err**0.45, 0.0, 1.0), 2)
 
+                if not os.path.exists(os.path.join(output_dir, scene, args.model_name)):
+                    os.makedirs(os.path.join(output_dir, scene, args.model_name))
+
                 plt.imsave(os.path.join(output_dir, scene, 'target.png'), t_tgt)
                 # WriteImg(os.path.join(output_dir, scene, 'target.pfm'), tgt) # HDR image
                 plt.imsave(os.path.join(output_dir, scene, 'input_{}.png'.format(spp)), t_ipt)
                 # WriteImg(os.path.join(output_dir, scene, 'input_{}.pfm'.format(spp)), ipt)
+                # plt.imsave(os.path.join(output_dir, scene, args.model_name, 'output_{}.png'.format(spp)), t_out)
                 plt.imsave(os.path.join(output_dir, scene, 'output_{}_{}.png'.format(spp, args.model_name)), t_out)
                 # WriteImg(os.path.join(output_dir, scene, 'output_{}_{}.pfm'.format(spp, args.model_name)), out_rad)
+                # plt.imsave(os.path.join(output_dir, scene, args.model_name, 'errmap_rmse_{}.png'.format(spp)), t_err, cmap=plt.get_cmap('magma'))
                 plt.imsave(os.path.join(output_dir, scene, 'errmap_rmse_{}_{}.png'.format(spp, args.model_name)), t_err, cmap=plt.get_cmap('magma'))
                 # WriteImg(os.path.join(output_dir, scene, 'errmap_{}_{}.pfm'.format(spp, args.model_name)), err.mean(2))
-                plt.imsave(os.path.join(output_dir, scene, 'errmap_{}_{}.png'.format(spp, args.model_name)), err.mean(2), cmap='jet', vmin=0, vmax=0.2)
+                # plt.imsave(os.path.join(output_dir, scene, args.model_name, 'errmap_{}.png'.format(spp, args.model_name)), err.mean(2), cmap='magma', vmin=0, vmax=0.2)
 
 
             if args.vis_branch:
@@ -392,13 +385,6 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
                     if kk.mean() > 0:
                         plt.imsave(os.path.join(output_dir, scene, str(spp), args.model_name, '{}.png'.format(k)), kk)
         
-            if args.kernel_visualize:
-                    for p in pixels:
-                        plt.imsave(os.path.join(output_dir, scene, str(spp), 'crop_{}_{}_{}_{}_{}.png'.format(spp, args.model_name,k,p[0],p[1])), kk[p[0]-10:p[0]+11, p[1]-10:p[1]+11, ...])
-                    for k in out_kernel_dict:
-                        for p in pixels:
-                            kk = np.reshape(out_kernel_dict[k][p[0], p[1], ...], (21, 21))
-                        plt.imsave(os.path.join(output_dir, scene, str(spp), 'kernel_{}_{}_{}_{}_{}.png'.format(spp, args.model_name,k,p[0],p[1])), kk, cmap='gray')
             if args.vis_score:
                 for k in out_score_dict:
                     if 'weight' in k: 
@@ -408,10 +394,7 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
                     else: 
                         cmap = 'jet'
                         vmin = 0.0
-                        # if 'diffuse' in k: vmax = 0.5
-                        # elif 'specular' in k: vmax = 0.2
                         vmax = 1.0
-                        # print('max', k, np.max(out_score_dict[k]))
                     plt.imsave(os.path.join(output_dir, scene, str(spp), args.model_name, '{}.png'.format(k)), out_score_dict[k][..., 0], cmap=plt.get_cmap(cmap), vmin=vmin, vmax=vmax)
             
     print('saving results :', os.path.join(output_dir, 'results_{}_{}.csv'.format(args.model_name, spps[-1])))
@@ -423,7 +406,7 @@ def denoise(args, input_dir, output_dir="result6", scenes=None, spps=[8], save_f
 if __name__ == "__main__":
     class Args(): # just for compatibility with argparse-related functions
         output_dir = 'result_full'
-        save = '/root/WCMC/weights_8/'
+        save = '/home/kyubeom/WCMC/weights_final/'
         model_name = 'SBMC_v2.0'
         single_gpu = True
         use_g_buf, use_sbmc_buf, use_llpm_buf = True, True, True
@@ -456,26 +439,6 @@ if __name__ == "__main__":
         local = False
 
         # new
-        use_skip = False
-        use_pretrain = False
-        use_second_strategy = False
-        use_single = False
-        use_adv = False
-        separate = False
-        p_depth = 2
-        strided_down = False
-        activation = 'relu'
-        output_type = 'linear'
-        disc_activation = 'leaky_relu'
-        no_p_model = False
-        type = None
-        interpolation = 'kernel'
-        soft_label = False
-        error_type = 'L1'
-        revise = False
-        weight = 'softmax'
-        model_type = 'unet'
-        error = False
         no_gbuf = False
         
 
@@ -499,88 +462,161 @@ if __name__ == "__main__":
         # save
         vis_branch = False
         vis_score = False
-    
+
+        # for adv
+        lr_G_diffuse = 0
+        lr_G_specular = 0
+        lr_D = 0
+        decay_step = 1
+
+
     args = Args()
 
-    input_dir = '/mnt/ssd1/kbhan/KPCN/test/input/'
-    # input_dir = '/mnt/ssd2/kbhan/new_volume/KPCN/test/input/'
-    # full scene
-    # scenes = ['bathroom', 'bathroom_v2', 'bathroom_v3', 'bathroom-3', 'bathroom-3_v2', 'bathroom-3_v3', 'car', 'car_v2', 'car_v3', 'car2', 'car2_v3', 'chair-room', 'chair-room_v2', 'chair', 'gharbi', 'hookah', 'hookah_v2', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'kitchen-2_v3', 'library-office', 'sitting-room-2', 'tableware']
-    # scenes = ['bathroom', 'bathroom_v2', 'bathroom_v3', 'bathroom-3', 'bathroom-3_v2', 'bathroom-3_v3', 'car', 'car_v2', 'car_v3', 'car2', 'car2_v3', 'chair-room', 'chair-room_v2', 'chair', 'gharbi', 'hookah', 'hookah_v2', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'kitchen-2_v3', 'library-office', 'sitting-room-2', 'tableware']
-    # scenes with 32, 64 spp
-    # scenes = ['bathroom-3_v2', 'car', 'car_v2', 'car_v3', 'chair', 'chair-room', 'chair-room_v2', 'gharbi', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'library-office', 'sitting-room-2', 'tableware']
-    
-    
-    # input_dir = '/mnt/hdd1/kbhan/KPCN/test/input/'
-    # scenes = ['bathroom-2', 'bathroom', 'bedroom', 'car', 'car2', 'coffee', 'cornell-box-2', 'cornell-box', 'dining-room-2', 'gharbi', 'glass-of-water', 'kitchen', 'lamp', 'living-room-2', 'living-room-3', 'living-room', 'material-testball', 'spaceship', 'staircase-2', 'staircase']
-    # scenes = ['bathroom']
-
-
-    spps = [2, 4, 8, 16]
-    # spps = [32, 64]
-    # spps = [8]
+    input_dir = '/mnt/ssd1/kbhan2/KPCN/test/input/'
     torch.cuda.set_device(args.device_id)
-    args.save = '/home/kyubeom/WCMC/weights_full_3_new/'
-    args.output_dir = 'result_final'
+    args.output_dir = 'result_adv'
 
     scene_full = ['bathroom', 'bathroom_v2', 'bathroom_v3', 'bathroom-3', 'bathroom-3_v2', 'bathroom-3_v3', 'car', 'car_v2', 'car_v3', 'car2', 'car2_v3', 'chair-room', 'chair-room_v2', 'chair', 'gharbi', 'hookah', 'hookah_v2', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'kitchen-2_v3', 'library-office', 'sitting-room-2', 'tableware']
     scene_64 = ['bathroom-3_v2', 'car', 'car_v2', 'car_v3', 'chair', 'chair-room', 'chair-room_v2', 'gharbi', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'library-office', 'sitting-room-2', 'tableware']
     scene_toy = ['bathroom']
-    scene_val = [
-        'bathroom-2_1', 'bedroom_0', 'coffee_22', 'cornell-box-2_16', 'cornell-box_25', 'dining-room-2_20', 'dragon_48', 'glass-of-water_52', 'hyperion_15', 
-        'kitchen_45', 'lamp_33', 'living-room-2_6', 'living-room-3_61', 'living-room_25', 'material-testball_28', 'spaceship_0', 'staircase-2_3', 'staircase_61',
-        ]
-    scene_2 = ['bathroom-2', 'bathroom', 'car', 'car2', 'coffee', 'gharbi', 'kitchen', 'living-room-2', 'living-room-3', 'living-room', 'staircase-2']
+
+    '''
+    Toggle these to get results of each branches and weight maps
+    '''
+    # args.vis_branch, args.vis_score = True, True
 
     # scenes = scene_full
     # spps = [2, 4, 8, 16]
-    # print('KPCN_manif')
-    # # scenes = scene_full
-    # args.save = '/home/kyubeom/WCMC/weights_full_2'
-    # args.model_name = 'KPCN_manif_p12_full'
-    # args.pnet_out_size = [12]
-    # # args.no_gbuf = True
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # print('KPCN_G')
+    # args.model_name = 'KPCN_G'
+    # args.pnet_out_size = [0]
+    # args.use_llpm_buf, args.manif_learn = False, False
+    # args.no_gbuf = False
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
     # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
 
-    args.output_dir = 'result_adv'
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # print('KPCN_P')
+    # args.model_name = 'KPCN_P'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.no_gbuf = True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
 
-    # KPCN
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # print('KPCN_GP')
+    # args.model_name = 'KPCN_GP'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.no_gbuf = False
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # print('KPCN_ensemble')
+    # args.model_name = 'KPCN_Ensemble'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.feature = True
+    # args.train_branches = True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # print('KPCN_ensemble_half')
+    # args.save = 'weights_full_3'
+    # args.model_name = 'e2_KPCN_ensemble_feature_finetune_halfE_full'
+    # args.pnet_out_size = [12]
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # args.load_gbuf, args.load_pbuf = True, True
+    # args.feature = True
+    # args.train_branches = True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # print('ADV_G')
+    # args.save = '/home/kyubeom/WCMC/weights_adv/'
+    # args.model_name = 'e7_ADV_G_full'
+    # args.pnet_out_size = [0]
+    # args.use_llpm_buf, args.manif_learn = False, False
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # # args.error = True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # print('ADV_P')
+    # args.save = '/home/kyubeom/WCMC/weights_adv/'
+    # args.model_name = 'e6_ADV_P_w01_sch1'
+    # args.pnet_out_size = [12]
+    # args.no_gbuf = True
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # # args.error = True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
+    # scenes = scene_full
+    # spps = [2, 4, 8, 16]
+    # print('ADV_GP')
+    # args.save = '/home/kyubeom/WCMC/weights_adv/'
+    # args.model_name = 'e6_ADV_GP_w01_sch1'
+    # args.pnet_out_size = [12]
+    # args.no_gbuf = False
+    # args.use_llpm_buf, args.manif_learn = True, True
+    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
+    # # args.error = True
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+    # scenes = scene_64
+    # spps = [32, 64]
+    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
+
     scenes = scene_full
     spps = [2, 4, 8, 16]
-    print('KPCN')
-    args.save = '/home/kyubeom/WCMC/weights_adv/'
-    args.model_name = 'e9_ADV_G_3'
-    args.pnet_out_size = [0]
-    args.use_llpm_buf, args.manif_learn = False, False
+    print('ADV_Ensemble')
+    # scenes = scene_full
+    args.save = '/home/kyubeom/WCMC/weights_adv'
+    args.model_name = 'e4_ADV_ensemble_feature_finetune_full'
+    args.pnet_out_size = [12]
+    args.no_gbuf = False
+    args.use_llpm_buf, args.manif_learn = True, True
+    args.load_gbuf, args.load_pbuf = True, True
     # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # args.error = True
     denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
     scenes = scene_64
     spps = [32, 64]
+    denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
 
-    # KPCN
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # print('KPCN')
-    # args.save = '/home/kyubeom/WCMC/weights_half/'
-    # args.model_name = 'e4_KPCN_G_half'
-    # args.pnet_out_size = [0]
-    # args.use_llpm_buf, args.manif_learn = False, False
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # # args.error = True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
 
     # scenes = scene_full
     # spps = [2, 4, 8, 16]
     # print('KPCN')
     # args.save = '/home/kyubeom/WCMC/weights_half/'
-    # args.model_name = 'e6_KPCN_G_half'
+    # args.model_name = 'e6_KPCN_G_half_full_2'
     # args.pnet_out_size = [0]
     # args.use_llpm_buf, args.manif_learn = False, False
     # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
@@ -594,9 +630,9 @@ if __name__ == "__main__":
     # scenes = scene_full
     # spps = [2, 4, 8, 16]
     # print('KPCN_manif')
-    # scenes = scene_full
+    # scenes = scene_full 
     # args.save = '/home/kyubeom/WCMC/weights_half'
-    # args.model_name = 'e6_KPCN_P_half'
+    # args.model_name = 'e8_KPCN_P'
     # args.pnet_out_size = [12]
     # args.no_gbuf = True
     # args.use_llpm_buf, args.manif_learn = True, True
@@ -613,7 +649,7 @@ if __name__ == "__main__":
     # print('KPCN_manif')
     # scenes = scene_full
     # args.save = '/home/kyubeom/WCMC/weights_half'
-    # args.model_name = 'e8_KPCN_P_half'
+    # args.model_name = 'e5_KPCN_P_half_full_2'
     # args.pnet_out_size = [12]
     # args.no_gbuf = True
     # args.use_llpm_buf, args.manif_learn = True, True
@@ -629,545 +665,14 @@ if __name__ == "__main__":
     # spps = [2, 4, 8, 16]
     # print('KPCN_manif')
     # # scenes = scene_full
-    # args.save = '/home/kyubeom/WCMC/weights_full_2'
-    # args.model_name = 'KPCN_manif_p12_full'
+    # args.save = '/home/kyubeom/WCMC/weights_half'
+    # args.model_name = 'e5_KPCN_GP_half_full'
     # args.pnet_out_size = [12]
     # args.no_gbuf = False
     # args.use_llpm_buf, args.manif_learn = True, True
     # args.load_gbuf, args.load_pbuf = True, True
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_half/'
-    # args.model_name = 'e8_KPCN_ensemble_feature_finetune_half'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # # args.model_type = 'unet'
-    # args.feature = True
-    # args.train_branches = True
     # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
     # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
     # scenes = scene_64
     # spps = [32, 64]
     # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_half/'
-    # args.model_name = 'e11_KPCN_ensemble_feature_finetune_half'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # # args.model_type = 'unet'
-    # args.feature = True
-    # args.train_branches = True
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_half/'
-    # args.model_name = 'e3_KPCN_ensemble_feature_finetune_half_2'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # # args.model_type = 'unet'
-    # args.feature = True
-    # args.train_branches = True
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_full_3/'
-    # args.model_name = 'KPCN_ensemble_finetune_full'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # # args.model_type = 'unet'
-    # args.feature = False
-    # args.train_branches = True
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_new/'
-    # args.model_name = 'e3_KPCN_ensemble_feature_finetune_full_5_5'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # # args.model_type = 'unet'
-    # args.feature = True
-    # args.train_branches = True
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_new/'
-    # args.model_name = 'e5_KPCN_ensemble_feature_finetune_full_5_5'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # # args.model_type = 'unet'
-    # args.feature = True
-    # args.train_branches = True
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_new/'
-    # args.model_name = 'e2_KPCN_ensemble_feature_finetune_full_5_2'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # # args.model_type = 'unet'
-    # args.feature = True
-    # args.train_branches = True
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_new/'
-    # args.model_name = 'e3_KPCN_ensemble_feature_finetune_full_5_2'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # # args.model_type = 'unet'
-    # args.feature = True
-    # args.train_branches = True
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_new/'
-    # args.model_name = 'e7_KPCN_ensemble_feature_finetune_full_5_2'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # # args.model_type = 'unet'
-    # args.feature = True
-    # args.train_branches = True
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_new/'
-    # args.model_name = 'e3_KPCN_ensemble_feature_finetune_final_full'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # # args.model_type = 'unet'
-    # args.feature = True
-    # args.train_branches = False
-    # args.ensemble_branches = False
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_new/'
-    # args.model_name = 'KPCN_ensemble_feature_finetune_full'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # # args.model_type = 'unet'
-    # args.feature = True
-    # args.train_branches = True
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-    # # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_full_3/'
-    # args.model_name = 'KPCN_ensemble_finetune_full'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # # args.model_type = 'unet'
-    # args.feature = False
-    # args.train_branches = True
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_full_3/'
-    # args.output_dir = 'result_new_full_3'
-    # args.model_name = 'KPCN_ensemble_feature_fix_full'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # # args.model_type = 'unet'
-    # args.error, args.error_type = False, 'MSE'
-    # args.feature = True
-    # args.train_branches = True
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_full_3/'
-    # args.model_name = 'KPCN_ensemble_fix_full'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # args.feature = False
-    # args.train_branches = True
-    # # args.model_type = 'unet'
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_full_3_new/'
-    # args.model_name = 'KPCN_ensemble_full'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # args.feature = False
-    # args.train_branches = True
-    # # args.model_type = 'unet'
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # # print('KPCN_ensemble')
-    # args.save = '/home/kyubeom/WCMC/weights_full_3/'
-    # args.model_name = 'KPCN_ensemble_feature_finetune_full_2'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'MSE'
-    # args.feature = True
-    # args.train_branches = True
-    # # args.model_type = 'unet'
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
-    # KPCN_ensemble
-    # scenes = scene_full
-    # spps = [2, 4]
-    # print('KPCN_ensemble')
-    # args.model_name = 'KPCN_ensemble_test'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'relL1'
-    # args.model_type = 'conv_3'
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-
-    # KPCN_ensemble
-    # input_dir = '/mnt/ssd1/kbhan/KPCN/val/input/'
-    # args.save = '/home/kyubeom/WCMC/weights_full_2/'
-    # args.output_dir = 'result_new_full_vis'
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # print('KPCN_ensemble')
-    # args.model_name = 'KPCN_ensemble_finetune_full'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = False, 'SMAPE'
-    # args.interpolate = True
-    # args.model_type = 'dsbn_unet'
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # print('KPCN_ensemble_error')
-    # args.model_name = 'KPCN_ensemblwe_error_MSE_finetune'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = True, 'MSE'
-    # args.model_type = 'unet'
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
-    # args.output_dir = 'result_ens_8_vis'
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # args.model_name = 'KPCN_ensemblwe_error_relL1_finetune'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = True, 'MSE'
-    # args.model_type = 'unet'
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # args.output_dir = 'result_ens_8_vis'
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # args.model_name = 'KPCN_ensemblwe_error_MSE_finetune'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.load_gbuf, args.load_pbuf = True, True
-    # args.error, args.error_type = True, 'MSE'
-    # args.model_type = 'unet'
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-
-    # KPCN_new_adv_1
-    # scenes = scene_full
-    # spps = [4]
-    # print('KPCN_new_adv_1')
-    # args.type = 'new_adv_1'
-    # args.model_name = 'KPCN_new_adv_1_wadv_0.05_soft_L1_nogt_image_softmax'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.use_adv = True
-    # args.disc_activation = "leaky_relu"
-    # args.interpolation = 'image'
-    # args.soft_label, args.error_type = True, 'L1'
-    # args.weight, args.model_type = 'softmax', 'conv_1'
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # scenes = scene_full
-    # spps = [2, 4, 8, 16]
-    # print('KPCN_new_adv_1')
-    # args.type = 'new_adv_1'
-    # args.model_name = 'KPCN_new_adv_1_noadv_image_full_2'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.use_adv = True
-    # args.disc_activation = "leaky_relu"
-    # args.interpolation = 'image'
-    # args.soft_label, args.error_type = False, 'L1'
-    # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-    # scenes = scene_64
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=False, output_dir=args.output_dir)
-
-    # KPCN_new_adv_2
-    # print('KPCN_new_adv_2')
-    # scenes = ['bathroom', 'bathroom_v2', 'bathroom_v3', 'bathroom-3', 'bathroom-3_v2', 'bathroom-3_v3', 'car', 'car_v2', 'car_v3', 'car2', 'car2_v3', 'chair-room', 'chair-room_v2', 'chair', 'gharbi', 'hookah', 'hookah_v2', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'kitchen-2_v3', 'library-office', 'sitting-room-2', 'tableware']
-    # spps = [2, 4, 8, 16]
-    # args.type = 'new_adv_2'
-    # args.model_name = 'KPCN_new_adv_2_noadv_full'
-    # args.pnet_out_size = [12]
-    # args.use_llpm_buf, args.manif_learn = True, True
-    # args.use_adv = True
-    # # args.disc_activation = "leaky_relu"
-    # # args.kernel_visualize, args.vis_branch, args.vis_score = False, True, True
-    # args.interpolation = 'kernel'
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-    # scenes = ['bathroom-3_v2', 'car', 'car_v2', 'car_v3', 'chair', 'chair-room', 'chair-room_v2', 'gharbi', 'hookah_v3', 'kitchen-2', 'kitchen-2_v2', 'library-office', 'sitting-room-2', 'tableware']
-    # spps = [32, 64]
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
-    # KPCN_adv
-    # print('KPCN_adv')
-    # args.model_name = 'KPCN_new_adv_2_2'
-    # args.pnet_out_size = [3]
-    # args.use_llpm_buf, args.manif_learn = True, False
-    # args.use_single = True
-    # args.use_adv = True
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
-    # KPCN_adv
-    # print('KPCN_adv')
-    # args.model_name = 'KPCN_new_adv_2_disc_leaky_w0.0002'
-    # args.pnet_out_size = [3]
-    # args.use_llpm_buf, args.manif_learn = True, False
-    # args.use_single = True
-    # args.use_adv = True
-    # args.disc_activation = "leaky_relu"
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
-    # LBMC
-    # print('LBMC')
-    # args.model_name = 'LBMC'
-    # # args.pnet_out_size = [3]
-    # # args.disentangle = 'm11r11'
-    # args.use_g_buf, args.use_sbmc_buf, args.use_llpm_buf, args.manif_learn = True, False, False, False
-    # denoise(args, input_dir, spps=[8], scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
-    # LBMC_manif
-    # print('LBMC_manif')
-    # args.model_name = 'LBMC_manif_w1'
-    # args.pnet_out_size = [6]
-    # args.disentangle = 'm11r11'
-    # args.use_g_buf, args.use_sbmc_buf, args.use_llpm_buf, args.manif_learn = True, False, True, True
-    # denoise(args, input_dir, spps=[8], scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
-    # SBMC
-    # print('SBMC')
-    # args.model_name = 'SBMC'
-    # args.pnet_out_size = [0]
-    # args.disentangle = 'm11r11'
-    # args.use_sbmc_buf, args.use_llpm_buf, args.manif_learn = False, False, False
-    # denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True, output_dir=args.output_dir)
-
-    
-    """ Test cases
-    # LBMC
-    print('LBMC_Path_P3')
-    args.model_name = 'LBMC_Path_P3'
-    args.pnet_out_size = [3]
-    args.disentangle = 'm11r11'
-    args.use_g_buf, args.use_sbmc_buf, args.use_llpm_buf, args.manif_learn = True, False, True, False
-    denoise(args, input_dir, spps=[2,4,8,16,32,64], scenes=scenes, save_figures=True)
-    
-    print('LBMC_Manifold_P6')
-    args.model_name = 'LBMC_Manifold_P6'
-    args.pnet_out_size = [6]
-    args.disentangle = 'm11r11'
-    args.use_g_buf, args.use_sbmc_buf, args.use_llpm_buf, args.manif_learn = True, False, True, True
-    denoise(args, input_dir, spps=[2,4,8,16,32,64], scenes=scenes, save_figures=True)
-    
-    print('LBMC_vanilla')
-    args.model_name = 'LBMC_vanilla'
-    args.pnet_out_size = [0]
-    args.disentangle = 'm11r11'
-    args.use_g_buf, args.use_sbmc_buf, args.use_llpm_buf, args.manif_learn = True, False, False, False
-    denoise(args, input_dir, spps=[2,4,8,16,32,64], scenes=scenes, save_figures=True)
-    
-    # KPCN
-    print('KPCN_vanilla')
-    args.model_name = 'KPCN_vanilla'
-    args.pnet_out_size = [0]
-    args.use_llpm_buf, args.manif_learn = False, False
-    denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True)
-    
-    print('KPCN_path')
-    args.model_name = 'KPCN_path'
-    args.pnet_out_size = [3]
-    args.disentangle = 'm11r11'
-    args.use_llpm_buf, args.manif_learn = True, False
-    denoise(args, input_dir, spps=spps, scenes=scenes, rhf=True)
-     
-    # SBMC
-    print('SBMC_vanilla')
-    args.model_name = 'SBMC_vanilla'
-    args.pnet_out_size = [0]
-    args.disentangle = 'm11r11'
-    args.use_sbmc_buf, args.use_llpm_buf, args.manif_learn = True, False, False
-    denoise(args, input_dir, spps=spps, scenes=scenes, save_figures=True)
-
-    print('SBMC_path')
-    args.model_name = 'SBMC_path'
-    args.pnet_out_size = [3]
-    args.use_sbmc_buf, args.use_llpm_buf, args.manif_learn = False, True, False
-    denoise(args, input_dir, spps=spps, scenes=scenes, rhf=True)
-    
-    print('SBMC_Manifold_Naive')
-    args.model_name = 'SBMC_Manifold_Naive'
-    args.pnet_out_size = [3]
-    args.use_sbmc_buf, args.use_llpm_buf, args.manif_learn = False, True, False
-    denoise(args, input_dir, spps=spps, scenes=scenes)
-    """

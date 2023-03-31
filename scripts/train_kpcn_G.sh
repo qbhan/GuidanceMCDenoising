@@ -2,13 +2,13 @@ python train_kpcn.py \
     --single_gpu \
     --batch_size 8 \
     --val_epoch 1 \
-    --data_dir /home/kyubeom/ssd1/KPCN \
-    --model_name KPCN_G_full_2 \
-    --desc "KPCN_G_full_2" \
+    --data_dir /mnt/ssd2/kbhan/KPCN \
+    --model_name KPCN_G_full_test \
+    --desc "KPCN_G_full_test" \
     --train_branches \
     --num_epoch 10 \
     --lr_dncnn 1e-4 \
     --device_id 0 \
-    --save "weights_full_4"\
-    --summary "summary_full_4" \
+    --save "weights_test"\
+    --summary "summary_test" \
     --num_epoch 10

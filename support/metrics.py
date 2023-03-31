@@ -91,4 +91,5 @@ def SSIM(im, ref, reduce=True):
     Returns:
         (float) error value.
     """
+    # return 1-ssim(im, ref, multichannel=True, full=(not reduce), channel_axis=2, data_range=im.max()-im.min())
     return 1-ssim(im, ref, multichannel=True, full=(not reduce))

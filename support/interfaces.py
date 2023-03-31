@@ -1522,7 +1522,6 @@ class EnsembleAdvMCDInterface(BaseInterface):
         self.disentanglement_option = disentanglement_option
         self.fix = args.fix
         self.feature = args.feature
-        self.model_type = args.model_type
         self.best_err = 1e10
         self.epoch = 0
         self.cnt = 0    

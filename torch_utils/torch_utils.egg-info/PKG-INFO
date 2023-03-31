@@ -5,11 +5,6 @@ Summary: torch_utils - fast kernel evaluations
 Home-page: https://github.com/NVlabs/layerdenoise
 Author: Jon Hasselgren
 Author-email: jhasselgren@nvidia.com
-License: UNKNOWN
-Platform: UNKNOWN
 Classifier: Programming Language :: Python :: 3
 Classifier: Operating System :: OS Independent
 Requires-Python: >=3.6
-
-UNKNOWN
-
