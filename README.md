@@ -25,14 +25,12 @@ Our code is tested on Ubuntu 18.04 with an Intel i9-10940X CPU with NVIDIA Gefor
 
 1. Clone the git repository and create a PyTorch Anaconda environment as below:
     ```
-    conda create -n pytorch python=3.9
+    conda create -n pytorch python=3.10
     activate pytorch
-    conda install pytorch==1.12.0 torchvision==0.13.0 cudatoolit==11.3.1 -c pytorch
-    conda install -c anaconda h5py
-    conda install tensorboard tensorboardX lz4
-    pip install opencv-python, kornia, scipy, pandas, tqdm, matplotlib
+    pip install torch
+    pip install h5py tensorboard tensorboardX  opencv-python kornia scipy pandas tqdm matplotlib visdom imageio scikit-image numpy pykeops
     ```
-
+New: Our framework works on recent PyTorch version!
 2. Go to torch_utils and follow the instructions to install per-pixel kernel function for PyTorch
 
 3. Run the shell script in the directory 'scripts/' to train the model.
