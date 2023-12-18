@@ -48,14 +48,14 @@ New: Our framework works on recent PyTorch version!
 2. Repository Overview
    - train_kpcn.py         # Train KPCN with G- \& P- buffers
    - train_adv.py          # Train AdvMCD with G- \& P- buffers
-   - train_lbmc.py         # Train NDLE with G- \& P- buffers
-   - train_sbmc.py         # Train SBMC with G- \& P- buffers
+   - train_lbmc.py (TODO)  # Train NDLE with G- \& P- buffers
+   - train_sbmc.py (TODO)  # Train SBMC with G- \& P- buffers
    - train_ensemble.py     # Train Our Guidance Denoising Framework
    - test_models.py        # Test any model
      - support/            # Codes for baselines \& utilities
        - WCMC/             # Codes for reproducing KPCN & SBMC & WCMC 
        - AdvMCD/           # Codes for reproducing AdvMCD
-       - NDLE/             # Codes for reproducing NDLE
+       - NDLE/ (TODO)      # Codes for reproducing NDLE
      	- datasets.py      
      	- img_utils.py
      	- interfaces.py
